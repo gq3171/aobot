@@ -6,8 +6,8 @@ use anyhow::{bail, Context};
 use reqwest::Client;
 
 use crate::types::{
-    ApiResponse, BotInfo, GetUpdatesParams, SendChatActionParams, SendMessageParams, TgMessage,
-    Update,
+    ApiResponse, BotInfo, EditMessageTextParams, GetUpdatesParams, SendChatActionParams,
+    SendMessageParams, SetChatMenuButtonParams, SetMyCommandsParams, TgMessage, Update,
 };
 
 /// HTTP client for the Telegram Bot API.
@@ -92,6 +92,78 @@ impl TelegramApi {
             );
         }
         Ok(())
+    }
+
+    /// Set the bot's menu button (shown left of the input field).
+    pub async fn set_chat_menu_button(
+        &self,
+        params: &SetChatMenuButtonParams,
+    ) -> anyhow::Result<()> {
+        let resp: ApiResponse<bool> = self
+            .client
+            .post(format!("{}/setChatMenuButton", self.base_url))
+            .json(params)
+            .send()
+            .await
+            .context("setChatMenuButton request failed")?
+            .json()
+            .await
+            .context("setChatMenuButton response parse failed")?;
+
+        if !resp.ok {
+            bail!(
+                "setChatMenuButton failed: {}",
+                resp.description.unwrap_or_else(|| "unknown error".into())
+            );
+        }
+        Ok(())
+    }
+
+    /// Register bot commands in the menu.
+    pub async fn set_my_commands(&self, params: &SetMyCommandsParams) -> anyhow::Result<()> {
+        let resp: ApiResponse<bool> = self
+            .client
+            .post(format!("{}/setMyCommands", self.base_url))
+            .json(params)
+            .send()
+            .await
+            .context("setMyCommands request failed")?
+            .json()
+            .await
+            .context("setMyCommands response parse failed")?;
+
+        if !resp.ok {
+            bail!(
+                "setMyCommands failed: {}",
+                resp.description.unwrap_or_else(|| "unknown error".into())
+            );
+        }
+        Ok(())
+    }
+
+    /// Edit an existing message's text.
+    pub async fn edit_message_text(
+        &self,
+        params: &EditMessageTextParams,
+    ) -> anyhow::Result<TgMessage> {
+        let resp: ApiResponse<TgMessage> = self
+            .client
+            .post(format!("{}/editMessageText", self.base_url))
+            .json(params)
+            .send()
+            .await
+            .context("editMessageText request failed")?
+            .json()
+            .await
+            .context("editMessageText response parse failed")?;
+
+        if !resp.ok {
+            bail!(
+                "editMessageText failed: {}",
+                resp.description.unwrap_or_else(|| "unknown error".into())
+            );
+        }
+        resp.result.context("editMessageText returned no result")
     }
 
     /// Send a text message.

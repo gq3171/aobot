@@ -44,7 +44,7 @@ uuid = { version = "1", features = ["v4"] }
 # aobot-specific
 rusqlite = { version = "0.32", features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }
-json5 = "0.4"
+toml = "0.8"
 dotenvy = "0.15"
 tokio-tungstenite = "0.26"
 axum = "0.8"

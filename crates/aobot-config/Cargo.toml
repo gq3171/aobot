@@ -6,8 +6,7 @@ edition.workspace = true
 [dependencies]
 aobot-types = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
-json5 = { workspace = true }
+toml = { workspace = true }
 dotenvy = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

@@ -41,6 +41,17 @@ pub struct TgMessage {
     pub chat: Chat,
     #[serde(default)]
     pub text: Option<String>,
+    #[serde(default)]
+    pub entities: Vec<MessageEntity>,
+}
+
+/// A message entity (bold, command, mention, etc.).
+#[derive(Debug, Deserialize)]
+pub struct MessageEntity {
+    #[serde(rename = "type")]
+    pub entity_type: String,
+    pub offset: i64,
+    pub length: i64,
 }
 
 /// A Telegram user.
@@ -98,6 +109,43 @@ pub struct SendMessageParams {
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parse_mode: Option<String>,
+}
+
+/// Parameters for `editMessageText`.
+#[derive(Debug, Serialize)]
+pub struct EditMessageTextParams {
+    pub chat_id: i64,
+    pub message_id: i64,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parse_mode: Option<String>,
+}
+
+/// A bot command for `setMyCommands`.
+#[derive(Debug, Serialize)]
+pub struct BotCommand {
+    pub command: String,
+    pub description: String,
+}
+
+/// Parameters for `setMyCommands`.
+#[derive(Debug, Serialize)]
+pub struct SetMyCommandsParams {
+    pub commands: Vec<BotCommand>,
+}
+
+/// Menu button shown in the input field.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MenuButton {
+    Commands,
+    Default,
+}
+
+/// Parameters for `setChatMenuButton`.
+#[derive(Debug, Serialize)]
+pub struct SetChatMenuButtonParams {
+    pub menu_button: MenuButton,
 }
 
 #[cfg(test)]

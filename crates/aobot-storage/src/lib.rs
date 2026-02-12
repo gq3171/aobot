@@ -29,6 +29,9 @@ pub struct SessionMetadata {
     pub last_active_at: i64,
     pub message_count: i64,
     pub is_active: bool,
+    /// pi-agent-rs session ID for JSONL history restoration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_session_id: Option<String>,
 }
 
 /// SQLite-based storage for aobot gateway metadata.
@@ -65,6 +68,11 @@ impl AoBotStorage {
             );",
         )?;
 
+        // Migration: add pi_session_id column (ignore error if already exists)
+        let _ = conn.execute_batch(
+            "ALTER TABLE gateway_sessions ADD COLUMN pi_session_id TEXT;",
+        );
+
         tracing::info!("Storage opened: {}", path.display());
 
         Ok(Self {
@@ -83,7 +91,8 @@ impl AoBotStorage {
                 created_at INTEGER NOT NULL,
                 last_active_at INTEGER NOT NULL,
                 message_count INTEGER DEFAULT 0,
-                is_active INTEGER DEFAULT 1
+                is_active INTEGER DEFAULT 1,
+                pi_session_id TEXT
             );
 
             CREATE TABLE IF NOT EXISTS channel_bindings (
@@ -109,14 +118,15 @@ impl AoBotStorage {
             let conn = conn.blocking_lock();
             conn.execute(
                 "INSERT INTO gateway_sessions
-                    (session_key, agent_name, model_id, created_at, last_active_at, message_count, is_active)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                    (session_key, agent_name, model_id, created_at, last_active_at, message_count, is_active, pi_session_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT(session_key) DO UPDATE SET
                     agent_name = excluded.agent_name,
                     model_id = excluded.model_id,
                     last_active_at = excluded.last_active_at,
                     message_count = excluded.message_count,
-                    is_active = excluded.is_active",
+                    is_active = excluded.is_active,
+                    pi_session_id = excluded.pi_session_id",
                 rusqlite::params![
                     meta.session_key,
                     meta.agent_name,
@@ -125,6 +135,7 @@ impl AoBotStorage {
                     meta.last_active_at,
                     meta.message_count,
                     meta.is_active as i32,
+                    meta.pi_session_id,
                 ],
             )?;
             Ok(())
@@ -139,7 +150,7 @@ impl AoBotStorage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.blocking_lock();
             let mut stmt = conn.prepare(
-                "SELECT session_key, agent_name, model_id, created_at, last_active_at, message_count, is_active
+                "SELECT session_key, agent_name, model_id, created_at, last_active_at, message_count, is_active, pi_session_id
                  FROM gateway_sessions WHERE session_key = ?1",
             )?;
             let result = stmt
@@ -152,6 +163,7 @@ impl AoBotStorage {
                         last_active_at: row.get(4)?,
                         message_count: row.get(5)?,
                         is_active: row.get::<_, i32>(6)? != 0,
+                        pi_session_id: row.get(7)?,
                     })
                 })
                 .optional()?;
@@ -166,7 +178,7 @@ impl AoBotStorage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.blocking_lock();
             let mut stmt = conn.prepare(
-                "SELECT session_key, agent_name, model_id, created_at, last_active_at, message_count, is_active
+                "SELECT session_key, agent_name, model_id, created_at, last_active_at, message_count, is_active, pi_session_id
                  FROM gateway_sessions WHERE is_active = 1 ORDER BY last_active_at DESC",
             )?;
             let rows = stmt
@@ -179,6 +191,7 @@ impl AoBotStorage {
                         last_active_at: row.get(4)?,
                         message_count: row.get(5)?,
                         is_active: row.get::<_, i32>(6)? != 0,
+                        pi_session_id: row.get(7)?,
                     })
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -197,6 +210,22 @@ impl AoBotStorage {
             conn.execute(
                 "UPDATE gateway_sessions SET last_active_at = ?1, message_count = message_count + 1 WHERE session_key = ?2",
                 rusqlite::params![now, key],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    /// Save the pi-agent-rs session ID for a gateway session.
+    pub async fn save_pi_session_id(&self, session_key: &str, pi_session_id: &str) -> Result<()> {
+        let conn = self.conn.clone();
+        let session_key = session_key.to_string();
+        let pi_session_id = pi_session_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.blocking_lock();
+            conn.execute(
+                "UPDATE gateway_sessions SET pi_session_id = ?1 WHERE session_key = ?2",
+                rusqlite::params![pi_session_id, session_key],
             )?;
             Ok(())
         })
@@ -290,6 +319,7 @@ mod tests {
             last_active_at: 1700000000000,
             message_count: 0,
             is_active: true,
+            pi_session_id: None,
         };
         storage.save_session(&meta).await.unwrap();
 
@@ -320,6 +350,7 @@ mod tests {
                 last_active_at: 1700000000000 + i,
                 message_count: 0,
                 is_active: true,
+                pi_session_id: None,
             };
             storage.save_session(&meta).await.unwrap();
         }
@@ -341,6 +372,7 @@ mod tests {
             last_active_at: 1700000000000,
             message_count: 0,
             is_active: true,
+            pi_session_id: None,
         };
         storage.save_session(&meta).await.unwrap();
 
@@ -361,6 +393,7 @@ mod tests {
             last_active_at: 1700000000000,
             message_count: 0,
             is_active: true,
+            pi_session_id: None,
         };
         storage.save_session(&meta).await.unwrap();
 
@@ -384,6 +417,7 @@ mod tests {
             last_active_at: 1700000000000,
             message_count: 0,
             is_active: true,
+            pi_session_id: None,
         };
         storage.save_session(&meta).await.unwrap();
 
@@ -409,6 +443,7 @@ mod tests {
             last_active_at: 1700000000000,
             message_count: 0,
             is_active: true,
+            pi_session_id: None,
         };
         storage.save_session(&meta).await.unwrap();
 

@@ -76,6 +76,26 @@ pub async fn run_polling_loop(
                         serde_json::Value::Number(msg.message_id.into()),
                     );
 
+                    // Detect bot commands (entity type "bot_command" at offset 0)
+                    let is_command = msg.entities.iter().any(|e| {
+                        e.entity_type == "bot_command" && e.offset == 0
+                    });
+                    if is_command {
+                        // Extract command name (e.g. "/new" → "new", "/help@botname" → "help")
+                        let cmd = text
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or("")
+                            .trim_start_matches('/')
+                            .split('@')
+                            .next()
+                            .unwrap_or("");
+                        metadata.insert(
+                            "command".into(),
+                            serde_json::Value::String(cmd.to_string()),
+                        );
+                    }
+
                     let inbound = InboundMessage {
                         channel_type: "telegram".into(),
                         channel_id: channel_id.clone(),

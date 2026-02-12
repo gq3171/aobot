@@ -45,6 +45,8 @@ use tracing::{info, warn};
 
 use aobot_types::{ChannelInfo, ChannelStatus, InboundMessage, OutboundMessage};
 
+use crate::session_manager::StreamEvent;
+
 use crate::session_manager::GatewaySessionManager;
 
 /// Trait for channel plugins that bridge external platforms to the gateway.
@@ -86,6 +88,25 @@ pub trait ChannelPlugin: Send + Sync {
         &self,
         _recipient_id: &str,
         _metadata: &HashMap<String, serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Whether this channel supports streaming responses (e.g. progressive message editing).
+    /// Default is false.
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+
+    /// Send a streaming response by consuming stream events.
+    ///
+    /// Called when `supports_streaming()` returns true. The implementation should
+    /// display progressive updates to the user (e.g. by editing a message in place).
+    /// Default implementation is a no-op.
+    async fn send_streaming(
+        &self,
+        _metadata: &HashMap<String, serde_json::Value>,
+        _stream_rx: mpsc::UnboundedReceiver<StreamEvent>,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -243,42 +264,118 @@ impl ChannelManager {
                     "Processing inbound message"
                 );
 
-                // Start periodic "typing" indicator while AI processes
-                let typing_cancel = CancellationToken::new();
-                if let Some(channel) = channel_mgr.get_channel(&inbound.channel_id).await {
-                    let cancel = typing_cancel.clone();
-                    let recipient = inbound.sender_id.clone();
-                    let metadata = inbound.metadata.clone();
-                    tokio::spawn(async move {
-                        loop {
-                            let _ = channel.notify_processing(&recipient, &metadata).await;
-                            tokio::select! {
-                                _ = cancel.cancelled() => break,
-                                _ = tokio::time::sleep(Duration::from_secs(4)) => {},
-                            }
+                // Check for bot commands in metadata
+                if let Some(cmd) = inbound.metadata.get("command").and_then(|v| v.as_str()).map(String::from) {
+                    let reply_text = match cmd.as_str() {
+                        "new" => {
+                            manager.delete_session(&session_key).await;
+                            "🔄 New conversation started. How can I help you?".to_string()
                         }
-                    });
-                }
+                        "help" | "start" => {
+                            "🤖 *aobot* — AI Assistant\n\n\
+                             Commands:\n\
+                             /new — Start a new conversation\n\
+                             /help — Show this help message\n\n\
+                             Send any message to chat with AI."
+                                .to_string()
+                        }
+                        _ => {
+                            // Unknown command — route to AI as normal text
+                            String::new()
+                        }
+                    };
 
-                match manager.send_message(&session_key, &inbound.text, agent).await {
-                    Ok(response_text) => {
-                        typing_cancel.cancel();
+                    if !reply_text.is_empty() {
                         let outbound = OutboundMessage {
                             channel_type: inbound.channel_type,
                             channel_id: inbound.channel_id,
                             recipient_id: inbound.sender_id,
-                            text: response_text,
+                            text: reply_text,
                             session_key: Some(session_key),
                             metadata: inbound.metadata,
                         };
-
                         if let Err(e) = channel_mgr.send_message(outbound).await {
-                            warn!("Failed to send response to channel: {e}");
+                            warn!("Failed to send command response: {e}");
+                        }
+                        return;
+                    }
+                }
+
+                // Check if channel supports streaming
+                let use_streaming = if let Some(ch) = channel_mgr.get_channel(&inbound.channel_id).await {
+                    ch.supports_streaming()
+                } else {
+                    false
+                };
+
+                if use_streaming {
+                    // Streaming path: send events to channel's send_streaming()
+                    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+
+                    let channel = channel_mgr.get_channel(&inbound.channel_id).await;
+                    let metadata = inbound.metadata.clone();
+                    let session_key_clone = session_key.clone();
+
+                    // Spawn the streaming display task
+                    let stream_handle = channel.map(|ch| tokio::spawn(async move {
+                        ch.send_streaming(&metadata, event_rx).await
+                    }));
+
+                    // Run the AI prompt with streaming events
+                    match manager
+                        .send_message_streaming(&session_key, &inbound.text, agent, event_tx)
+                        .await
+                    {
+                        Ok(_response_text) => {
+                            // Wait for the streaming display to finish
+                            if let Some(handle) = stream_handle {
+                                if let Err(e) = handle.await {
+                                    warn!(session = %session_key_clone, "Streaming display task error: {e}");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(session = %session_key_clone, "Agent error: {e}");
                         }
                     }
-                    Err(e) => {
-                        typing_cancel.cancel();
-                        warn!(session = %session_key, "Agent error: {e}");
+                } else {
+                    // Non-streaming path: collect full response then send
+                    let typing_cancel = CancellationToken::new();
+                    if let Some(channel) = channel_mgr.get_channel(&inbound.channel_id).await {
+                        let cancel = typing_cancel.clone();
+                        let recipient = inbound.sender_id.clone();
+                        let metadata = inbound.metadata.clone();
+                        tokio::spawn(async move {
+                            loop {
+                                let _ = channel.notify_processing(&recipient, &metadata).await;
+                                tokio::select! {
+                                    _ = cancel.cancelled() => break,
+                                    _ = tokio::time::sleep(Duration::from_secs(4)) => {},
+                                }
+                            }
+                        });
+                    }
+
+                    match manager.send_message(&session_key, &inbound.text, agent).await {
+                        Ok(response_text) => {
+                            typing_cancel.cancel();
+                            let outbound = OutboundMessage {
+                                channel_type: inbound.channel_type,
+                                channel_id: inbound.channel_id,
+                                recipient_id: inbound.sender_id,
+                                text: response_text,
+                                session_key: Some(session_key),
+                                metadata: inbound.metadata,
+                            };
+
+                            if let Err(e) = channel_mgr.send_message(outbound).await {
+                                warn!("Failed to send response to channel: {e}");
+                            }
+                        }
+                        Err(e) => {
+                            typing_cancel.cancel();
+                            warn!(session = %session_key, "Agent error: {e}");
+                        }
                     }
                 }
             });

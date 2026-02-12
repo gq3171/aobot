@@ -7,14 +7,21 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
+use std::future::Future;
+use std::pin::Pin;
+
 use pi_agent_ai::register::create_default_registry;
 use pi_agent_ai::stream::stream_simple;
-use pi_agent_core::agent_types::{AgentEvent, StreamFnBox};
+use pi_agent_core::agent_types::{AgentEvent, AgentMessage, StreamFnBox};
 use pi_agent_core::event_stream::create_assistant_message_event_stream;
 use pi_agent_core::types::*;
 use pi_coding_agent::agent_session::events::AgentSessionEvent;
 use pi_coding_agent::agent_session::sdk::{create_agent_session, CreateSessionOptions};
-use pi_coding_agent::agent_session::session::{AgentSession, PromptOptions};
+use pi_coding_agent::agent_session::session::{AgentSession, PromptOptions, SummaryFn};
+use pi_coding_agent::compaction::branch_summary;
+use pi_coding_agent::compaction::compaction as compaction_utils;
+use pi_coding_agent::error::CodingAgentError;
+use pi_coding_agent::retry::RetryConfig as PiRetryConfig;
 use pi_coding_agent::tools::create_coding_tools;
 
 use aobot_config::AoBotConfig;
@@ -61,6 +68,8 @@ struct ManagedSession {
     agent_name: String,
     model_id: String,
     created_at: i64,
+    /// Whether the pi-agent session ID has been captured and saved to SQLite.
+    pi_session_id_saved: bool,
 }
 
 impl GatewaySessionManager {
@@ -150,12 +159,85 @@ impl GatewaySessionManager {
             .unwrap_or_else(|| "You are a helpful assistant.".to_string());
         session.set_system_prompt(prompt);
 
+        // Set up summary function for compaction (uses the same LLM)
+        let summary_registry = self.registry.clone();
+        let summary_model_id = agent_config.model.clone();
+        let summary_fn: SummaryFn = Arc::new(move |messages: Vec<AgentMessage>, previous_summary: Option<String>| {
+            let registry = summary_registry.clone();
+            let model_id = summary_model_id.clone();
+            Box::pin(async move {
+                let summary_context = branch_summary::serialize_conversation(&messages);
+                let summary_prompt = branch_summary::generate_summary_prompt(
+                    &summary_context,
+                    previous_summary.as_deref(),
+                );
+
+                // Use the model registry to resolve the model
+                let model_registry = pi_coding_agent::model::registry::ModelRegistry::new();
+                let model = model_registry.find(&model_id).cloned().ok_or_else(|| {
+                    CodingAgentError::Model(format!("Failed to resolve model for summary: {model_id}"))
+                })?;
+
+                let context = Context {
+                    system_prompt: Some(branch_summary::SUMMARIZATION_SYSTEM_PROMPT.to_string()),
+                    messages: vec![Message::User(UserMessage {
+                        content: UserContent::Text(summary_prompt),
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                    })],
+                    tools: None,
+                };
+
+                let options = SimpleStreamOptions::default();
+                let cancel = CancellationToken::new();
+                let stream = stream_simple(&model, &context, &options, &registry, cancel)
+                    .map_err(|e| CodingAgentError::Agent(format!("Summary stream error: {e}")))?;
+
+                // Collect the full response text
+                let mut text = String::new();
+                let mut pinned = Box::pin(futures::stream::unfold(stream.clone(), |mut s| async move {
+                    let event = s.next().await;
+                    event.map(|e| (e, s))
+                }));
+                use futures::StreamExt;
+                while let Some(event) = pinned.next().await {
+                    if let AssistantMessageEvent::TextDelta { delta, .. } = event {
+                        text.push_str(&delta);
+                    }
+                }
+
+                if text.is_empty() {
+                    // Fallback to basic summary
+                    let max_len = 500;
+                    let end = summary_context
+                        .char_indices()
+                        .take_while(|&(i, _)| i <= max_len)
+                        .last()
+                        .map(|(i, c)| i + c.len_utf8())
+                        .unwrap_or(0);
+                    Ok(format!("Conversation summary: {}", &summary_context[..end]))
+                } else {
+                    Ok(text)
+                }
+            }) as Pin<Box<dyn Future<Output = Result<String, CodingAgentError>> + Send>>
+        });
+        session.set_summary_fn(summary_fn);
+
+        // Set up retry configuration from aobot config
+        let retry_config = &config.retry;
+        session.set_retry_config(PiRetryConfig {
+            enabled: retry_config.enabled,
+            max_retries: retry_config.max_retries,
+            base_delay_ms: retry_config.base_delay_ms,
+            max_delay_ms: retry_config.max_delay_ms,
+        });
+
         let now = chrono::Utc::now().timestamp_millis();
         let managed = ManagedSession {
             session,
             agent_name: agent_name.to_string(),
             model_id: agent_config.model.clone(),
             created_at: now,
+            pi_session_id_saved: false,
         };
 
         self.sessions
@@ -173,6 +255,7 @@ impl GatewaySessionManager {
                 last_active_at: now,
                 message_count: 0,
                 is_active: true,
+                pi_session_id: None,
             };
             if let Err(e) = storage.save_session(&meta).await {
                 tracing::warn!("Failed to persist session metadata: {e}");
@@ -232,11 +315,49 @@ impl GatewaySessionManager {
             }
         }));
 
-        managed
+        // Auto-compact before prompting if needed
+        self.maybe_compact(session_key, &mut managed).await;
+
+        let prompt_result = managed
             .session
             .prompt(message, PromptOptions::default())
-            .await
-            .map_err(|e| format!("Prompt error: {e}"))?;
+            .await;
+
+        // On context overflow, try emergency compaction and retry once
+        if let Err(ref e) = prompt_result {
+            let err_str = e.to_string();
+            if err_str.contains("too long")
+                || err_str.contains("context")
+                || err_str.contains("token")
+            {
+                tracing::warn!(session_key, "Context overflow detected, attempting emergency compaction");
+                if managed.session.compact(None).await.is_ok() {
+                    managed
+                        .session
+                        .prompt(message, PromptOptions::default())
+                        .await
+                        .map_err(|e| format!("Prompt error after compaction: {e}"))?;
+                } else {
+                    prompt_result.map_err(|e| format!("Prompt error: {e}"))?;
+                }
+            } else {
+                prompt_result.map_err(|e| format!("Prompt error: {e}"))?;
+            }
+        }
+
+        // Capture pi-agent session ID on first prompt
+        if !managed.pi_session_id_saved {
+            if let Some(pi_sid) = managed.session.session_id().map(|s| s.to_string()) {
+                if let Some(storage) = &self.storage {
+                    if let Err(e) = storage.save_pi_session_id(session_key, &pi_sid).await {
+                        tracing::warn!("Failed to save pi_session_id: {e}");
+                    } else {
+                        managed.pi_session_id_saved = true;
+                        tracing::debug!(session_key, pi_session_id = %pi_sid, "Captured pi_session_id");
+                    }
+                }
+            }
+        }
 
         // Update activity in storage
         if let Some(storage) = &self.storage {
@@ -265,7 +386,17 @@ impl GatewaySessionManager {
         let response_text = Arc::new(std::sync::Mutex::new(String::new()));
         let text_collector = response_text.clone();
 
+        // Clone for sending Done after prompt completes
+        let done_tx = event_tx.clone();
+
+        // Active flag: deactivated after prompt so old subscribers become no-ops
+        let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let active_flag = active.clone();
+
         managed.session.subscribe(Box::new(move |event| {
+            if !active_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
             match &event {
                 AgentSessionEvent::Agent(AgentEvent::MessageUpdate {
                     assistant_message_event: AssistantMessageEvent::TextDelta { delta, .. },
@@ -303,11 +434,52 @@ impl GatewaySessionManager {
             }
         }));
 
-        managed
+        // Auto-compact before prompting if needed
+        self.maybe_compact(session_key, &mut managed).await;
+
+        let prompt_result = managed
             .session
             .prompt(message, PromptOptions::default())
-            .await
-            .map_err(|e| format!("Prompt error: {e}"))?;
+            .await;
+
+        // On context overflow, try emergency compaction and retry once
+        if let Err(ref e) = prompt_result {
+            let err_str = e.to_string();
+            if err_str.contains("too long")
+                || err_str.contains("context")
+                || err_str.contains("token")
+            {
+                tracing::warn!(session_key, "Context overflow detected, attempting emergency compaction");
+                if managed.session.compact(None).await.is_ok() {
+                    managed
+                        .session
+                        .prompt(message, PromptOptions::default())
+                        .await
+                        .map_err(|e| format!("Prompt error after compaction: {e}"))?;
+                } else {
+                    prompt_result.map_err(|e| format!("Prompt error: {e}"))?;
+                }
+            } else {
+                prompt_result.map_err(|e| format!("Prompt error: {e}"))?;
+            }
+        }
+
+        // Deactivate the subscriber so it becomes a no-op on future prompts
+        active.store(false, std::sync::atomic::Ordering::Relaxed);
+
+        // Capture pi-agent session ID on first prompt
+        if !managed.pi_session_id_saved {
+            if let Some(pi_sid) = managed.session.session_id().map(|s| s.to_string()) {
+                if let Some(storage) = &self.storage {
+                    if let Err(e) = storage.save_pi_session_id(session_key, &pi_sid).await {
+                        tracing::warn!("Failed to save pi_session_id: {e}");
+                    } else {
+                        managed.pi_session_id_saved = true;
+                        tracing::debug!(session_key, pi_session_id = %pi_sid, "Captured pi_session_id");
+                    }
+                }
+            }
+        }
 
         // Update activity in storage
         if let Some(storage) = &self.storage {
@@ -317,6 +489,12 @@ impl GatewaySessionManager {
         }
 
         let result = response_text.lock().unwrap().clone();
+
+        // Signal streaming completion so send_streaming() can do its final edit
+        let _ = done_tx.send(StreamEvent::Done {
+            full_response: result.clone(),
+        });
+
         Ok(result)
     }
 
@@ -406,6 +584,61 @@ impl GatewaySessionManager {
         self.config.write().await.agents.remove(name).is_some()
     }
 
+    /// Build CompactionSettings from aobot config.
+    fn build_compaction_settings(
+        config: &aobot_config::CompactionConfig,
+    ) -> compaction_utils::CompactionSettings {
+        compaction_utils::CompactionSettings {
+            enabled: config.enabled,
+            reserve_tokens: config.reserve_tokens,
+            keep_recent_tokens: config.keep_recent_tokens,
+        }
+    }
+
+    /// Check if auto-compaction should run and execute it if needed.
+    async fn maybe_compact(
+        &self,
+        session_key: &str,
+        managed: &mut ManagedSession,
+    ) {
+        let config = self.config.read().await;
+        let settings = Self::build_compaction_settings(&config.compaction);
+        drop(config); // release read lock before await
+
+        if !settings.enabled {
+            return;
+        }
+
+        let model = match managed.session.model() {
+            Some(m) => m.clone(),
+            None => return,
+        };
+
+        let messages = managed.session.messages();
+        if compaction_utils::should_compact(messages, model.context_window, &settings) {
+            tracing::info!(
+                session_key,
+                messages = messages.len(),
+                "Auto-compaction triggered"
+            );
+            match managed.session.compact(Some(&settings)).await {
+                Ok(result) => {
+                    tracing::info!(
+                        session_key,
+                        messages_before = result.messages_before,
+                        messages_after = result.messages_after,
+                        tokens_before = result.tokens_before,
+                        tokens_after = result.tokens_after,
+                        "Auto-compaction complete"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(session_key, "Auto-compaction failed: {e}");
+                }
+            }
+        }
+    }
+
     /// Check if a session exists.
     pub async fn has_session(&self, session_key: &str) -> bool {
         self.sessions.read().await.contains_key(session_key)
@@ -414,7 +647,8 @@ impl GatewaySessionManager {
     /// Restore active sessions from persistent storage.
     ///
     /// Reads session metadata from SQLite and re-creates in-memory sessions.
-    /// Called at gateway startup to resume sessions across restarts.
+    /// When a `pi_session_id` is present, the JSONL history is loaded so the
+    /// agent remembers previous conversations across restarts.
     pub async fn restore_sessions(&self) -> Result<usize, String> {
         let storage = match &self.storage {
             Some(s) => s,
@@ -435,6 +669,34 @@ impl GatewaySessionManager {
                     session_key = %meta.session_key,
                     "Failed to restore session: {e}"
                 );
+                continue;
+            }
+
+            // Restore JSONL history if pi_session_id is available
+            if let Some(pi_sid) = &meta.pi_session_id {
+                let sessions = self.sessions.read().await;
+                if let Some(session_arc) = sessions.get(&meta.session_key) {
+                    let mut managed = session_arc.lock().await;
+                    match managed.session.restore_session(pi_sid) {
+                        Ok(()) => {
+                            managed.pi_session_id_saved = true;
+                            let msg_count = managed.session.messages().len();
+                            tracing::info!(
+                                session_key = %meta.session_key,
+                                pi_session_id = %pi_sid,
+                                messages = msg_count,
+                                "Restored session history from JSONL"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                session_key = %meta.session_key,
+                                pi_session_id = %pi_sid,
+                                "Failed to restore session history: {e}"
+                            );
+                        }
+                    }
+                }
             }
         }
 

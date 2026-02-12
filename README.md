@@ -1,3 +1,5 @@
+[中文](README_CN.md) | English
+
 # aobot
 
 Multi-channel AI gateway built on top of [pi-agent-rs](pi-agent-rs/) SDK.

@@ -1,0 +1,3 @@
+[submodule "pi-agent-rs"]
+	path = pi-agent-rs
+	url = /mnt/e/Rust/pi-agent-rs

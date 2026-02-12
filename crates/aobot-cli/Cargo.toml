@@ -1,0 +1,26 @@
+[package]
+name = "aobot-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "aobot"
+path = "src/main.rs"
+
+[dependencies]
+aobot-types = { workspace = true }
+aobot-config = { workspace = true }
+aobot-gateway = { workspace = true }
+pi-agent-core = { workspace = true }
+pi-agent-ai = { workspace = true }
+pi-coding-agent = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }

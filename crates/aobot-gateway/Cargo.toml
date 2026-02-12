@@ -1,0 +1,26 @@
+[package]
+name = "aobot-gateway"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aobot-types = { workspace = true }
+aobot-config = { workspace = true }
+pi-agent-core = { workspace = true }
+pi-agent-ai = { workspace = true }
+pi-coding-agent = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+axum = { workspace = true, features = ["ws"] }
+uuid = { workspace = true }
+chrono = { workspace = true }
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
+tokio-stream = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }

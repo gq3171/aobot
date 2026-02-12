@@ -90,7 +90,17 @@ fn main() -> anyhow::Result<()> {
                     Some(dir) => std::path::PathBuf::from(dir),
                     None => std::env::current_dir()?,
                 };
-                aobot_gateway::start_gateway(config, wd, port)
+
+                let mut channel_factories: std::collections::HashMap<
+                    String,
+                    aobot_gateway::ChannelFactory,
+                > = std::collections::HashMap::new();
+                channel_factories.insert(
+                    "telegram".into(),
+                    Box::new(aobot_channel_telegram::create_telegram_channel),
+                );
+
+                aobot_gateway::start_gateway(config, wd, port, channel_factories)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))
             })?;

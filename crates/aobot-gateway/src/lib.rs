@@ -18,6 +18,7 @@ pub mod session_manager;
 pub mod handlers;
 pub mod ws;
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,8 +34,13 @@ use tracing::info;
 
 use aobot_config::AoBotConfig;
 use aobot_storage::AoBotStorage;
+use aobot_types::ChannelConfig;
 use channel::ChannelManager;
 use session_manager::GatewaySessionManager;
+
+/// Factory function type for creating channel plugins from config.
+pub type ChannelFactory =
+    Box<dyn Fn(String, &ChannelConfig) -> anyhow::Result<Arc<dyn channel::ChannelPlugin>> + Send + Sync>;
 
 /// Shared gateway state.
 pub struct GatewayState {
@@ -51,6 +57,7 @@ pub async fn start_gateway(
     config: AoBotConfig,
     working_dir: PathBuf,
     port_override: Option<u16>,
+    channel_factories: HashMap<String, ChannelFactory>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let port = port_override.unwrap_or(config.gateway.port);
     let host = config.gateway.host.clone();
@@ -90,6 +97,33 @@ pub async fn start_gateway(
     }
 
     let channel_mgr = Arc::new(ChannelManager::new(256));
+
+    // Register channel plugins from config
+    for (ch_id, ch_config) in &manager.get_config().await.channels {
+        if !ch_config.enabled {
+            info!(channel_id = %ch_id, "Channel disabled, skipping");
+            continue;
+        }
+        if let Some(factory) = channel_factories.get(&ch_config.channel_type) {
+            match factory(ch_id.clone(), ch_config) {
+                Ok(plugin) => {
+                    channel_mgr.register(plugin).await;
+                }
+                Err(e) => {
+                    tracing::warn!(channel_id = %ch_id, "Failed to create channel plugin: {e}");
+                }
+            }
+        } else {
+            tracing::warn!(
+                channel_id = %ch_id,
+                channel_type = %ch_config.channel_type,
+                "No factory registered for channel type"
+            );
+        }
+    }
+
+    // Start all registered channels
+    channel_mgr.start_all().await;
 
     // Start config file watcher for hot-reload
     let _watcher_handle = config_watcher::start_config_watcher(manager.clone());

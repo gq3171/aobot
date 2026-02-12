@@ -1,0 +1,19 @@
+[package]
+name = "aobot-channel-telegram"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aobot-types = { workspace = true }
+aobot-gateway = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

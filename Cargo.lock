@@ -91,10 +91,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 
 [[package]]
+name = "aobot-channel-telegram"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aobot-gateway",
+ "aobot-types",
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "aobot-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aobot-channel-telegram",
  "aobot-config",
  "aobot-gateway",
  "aobot-types",

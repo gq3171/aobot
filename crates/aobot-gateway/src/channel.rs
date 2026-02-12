@@ -37,8 +37,10 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::{mpsc, RwLock};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use aobot_types::{ChannelInfo, ChannelStatus, InboundMessage, OutboundMessage};
@@ -74,6 +76,19 @@ pub trait ChannelPlugin: Send + Sync {
 
     /// Returns the current status of this channel.
     fn status(&self) -> ChannelStatus;
+
+    /// Notify the external platform that a message is being processed.
+    ///
+    /// Called periodically while the AI is generating a response.
+    /// Implementations can use this to send "typing..." indicators.
+    /// Default implementation is a no-op.
+    async fn notify_processing(
+        &self,
+        _recipient_id: &str,
+        _metadata: &HashMap<String, serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// Manages multiple channel plugins, routing messages between channels and agents.
@@ -188,6 +203,12 @@ impl ChannelManager {
         channels.get(channel_id).map(|ch| ch.status())
     }
 
+    /// Get a channel plugin by ID.
+    pub async fn get_channel(&self, channel_id: &str) -> Option<Arc<dyn ChannelPlugin>> {
+        let channels = self.channels.read().await;
+        channels.get(channel_id).cloned()
+    }
+
     /// Run the inbound message processing loop.
     ///
     /// This consumes messages from all channels and routes them through
@@ -222,8 +243,26 @@ impl ChannelManager {
                     "Processing inbound message"
                 );
 
+                // Start periodic "typing" indicator while AI processes
+                let typing_cancel = CancellationToken::new();
+                if let Some(channel) = channel_mgr.get_channel(&inbound.channel_id).await {
+                    let cancel = typing_cancel.clone();
+                    let recipient = inbound.sender_id.clone();
+                    let metadata = inbound.metadata.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            let _ = channel.notify_processing(&recipient, &metadata).await;
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                _ = tokio::time::sleep(Duration::from_secs(4)) => {},
+                            }
+                        }
+                    });
+                }
+
                 match manager.send_message(&session_key, &inbound.text, agent).await {
                     Ok(response_text) => {
+                        typing_cancel.cancel();
                         let outbound = OutboundMessage {
                             channel_type: inbound.channel_type,
                             channel_id: inbound.channel_id,
@@ -238,6 +277,7 @@ impl ChannelManager {
                         }
                     }
                     Err(e) => {
+                        typing_cancel.cancel();
                         warn!(session = %session_key, "Agent error: {e}");
                     }
                 }

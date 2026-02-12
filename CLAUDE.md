@@ -9,19 +9,22 @@ aobot is a Rust workspace (edition 2024) — a multi-channel AI gateway built on
 ## Workspace Structure
 
 - `crates/aobot-types` — Shared types (AgentConfig, InboundMessage, OutboundMessage, ChannelPlugin types)
-- `crates/aobot-config` — Configuration system (JSON5, dotenvy .env, hot-reload support)
+- `crates/aobot-config` — Configuration system (TOML, dotenvy .env, hot-reload support)
 - `crates/aobot-storage` — SQLite persistence for session metadata and channel bindings
 - `crates/aobot-gateway` — WebSocket Gateway + JSON-RPC server + ChannelManager
 - `crates/aobot-cli` — CLI binary (chat, gateway, send, health subcommands)
-- `pi-agent-rs/` — Git submodule: AI SDK (pi-agent-core, pi-agent-ai, pi-coding-agent)
+- `crates/aobot-channel-telegram` — Telegram channel plugin (long polling, message splitting, inline keyboards)
+- `pi-agent-rs/` — Git submodule: AI SDK (pi-agent-core, pi-agent-ai, pi-coding-agent including retry module)
 
 ## Key Architecture
 
 - **StreamFnBox bridge**: `aobot-cli` and `aobot-gateway` both create `StreamFnBox` (from pi-agent-core) that wraps `stream_simple()` (from pi-agent-ai) with `create_default_registry()` to connect `AgentSession` to LLM providers.
 - **JSON-RPC 2.0 over WebSocket**: Gateway uses axum + WebSocket upgrade. Methods: `health`, `chat.send`, `chat.stream`, `chat.history`, `sessions.*`, `agents.*`, `channels.*`, `config.*`.
 - **ChannelPlugin trait**: Extension point in `aobot-gateway::channel` for external platforms (Telegram, Discord, etc.). `ChannelManager` routes `InboundMessage` → agent → `OutboundMessage`.
-- **Config hot-reload**: `notify` crate watches `~/.aobot/config.json5`, auto-applies changes to `GatewaySessionManager`.
+- **Config hot-reload**: `notify` crate watches `~/.aobot/config.toml`, auto-applies changes to `GatewaySessionManager`.
 - **Persistent Storage**: `aobot-storage` uses SQLite (`~/.aobot/aobot.db`) for session metadata and channel bindings. Message content is managed by pi-agent's JSONL persistence. `GatewaySessionManager` restores active sessions on startup.
+- **Compaction & Incremental Summary**: pi-coding-agent's compaction system uses structured serialization (`[User]`, `[Assistant]`, `[Assistant thinking]`, `[Assistant tool calls]`, `[Tool result]`) and supports incremental summarization via `previous_summary`. Summary output is wrapped in `<summary>` tags. Prompt templates align with pi-mono.
+- **Automatic Retry**: pi-coding-agent's `retry` module provides exponential backoff for transient API errors (rate limits, 5xx, network errors). Context overflow errors are excluded from retry and handled via compaction instead. Configured via `AoBotConfig.retry`.
 - **Custom models**: `~/.pi/agent/models.json` for custom LLM model definitions (e.g. MiniMax CN domain override).
 
 ## Build & Development Commands

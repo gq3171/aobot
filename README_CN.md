@@ -12,7 +12,10 @@
 - **WebSocket 网关** — 基于 WebSocket 的 JSON-RPC 2.0 服务器，支持 Bearer Token 认证
 - **多 Agent 管理** — 命名式 Agent 配置，支持不同模型、系统提示词和工具
 - **通道插件框架** — 可扩展的外部平台集成接口（Telegram、Discord 等）
-- **配置热重载** — 通过监听 `~/.aobot/config.json5` 文件变化实时更新配置
+- **Telegram 通道** — 内置 Telegram 机器人集成，支持长轮询、消息分割和内联键盘
+- **自动上下文压缩** — 基于 token 的压缩策略，结构化序列化与增量 LLM 摘要（对齐 pi-mono）
+- **自动重试** — 对瞬态 API 错误（限流、5xx、网络错误）进行指数退避重试；上下文溢出通过压缩处理
+- **配置热重载** — 通过监听 `~/.aobot/config.toml` 文件变化实时更新配置
 - **持久化存储** — 基于 SQLite 的会话元数据持久化，会话可跨网关重启恢复
 
 ## 工作区结构
@@ -20,10 +23,11 @@
 ```
 crates/
   aobot-types/      共享类型（AgentConfig、InboundMessage、OutboundMessage 等）
-  aobot-config/     配置系统（JSON5、.env、热重载）
+  aobot-config/     配置系统（TOML、.env、热重载）
   aobot-storage/    SQLite 持久化（会话元数据、通道绑定）
   aobot-gateway/    WebSocket 网关 + JSON-RPC 服务器 + ChannelManager
   aobot-cli/        CLI 二进制（chat、gateway、send、health 子命令）
+  aobot-channel-telegram/  Telegram 通道插件（长轮询、消息分割、内联键盘）
 pi-agent-rs/        Git 子模块：AI SDK（pi-agent-core、pi-agent-ai、pi-coding-agent）
 ```
 
@@ -31,7 +35,7 @@ pi-agent-rs/        Git 子模块：AI SDK（pi-agent-core、pi-agent-ai、pi-co
 
 ```
 ~/.aobot/
-  config.json5      配置文件
+  config.toml       配置文件
   aobot.db          SQLite 数据库（会话元数据、通道绑定）
 ```
 

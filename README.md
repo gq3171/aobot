@@ -12,7 +12,10 @@ Provides CLI chat, WebSocket JSON-RPC gateway, multi-agent management, an extens
 - **WebSocket Gateway** — JSON-RPC 2.0 server over WebSocket with Bearer token auth
 - **Multi-Agent Management** — Named agent configurations with different models, system prompts, and tools
 - **Channel Plugin Framework** — Extensible integration point for external platforms (Telegram, Discord, etc.)
-- **Config Hot-Reload** — Live configuration updates via `~/.aobot/config.json5` file watching
+- **Telegram Channel** — Built-in Telegram bot integration with long polling, message splitting, and inline keyboards
+- **Automatic Context Compaction** — Token-based compaction with structured serialization and incremental LLM summarization (aligned with pi-mono)
+- **Automatic Retry** — Exponential backoff for transient API errors (rate limits, 5xx, network errors); context overflow handled via compaction
+- **Config Hot-Reload** — Live configuration updates via `~/.aobot/config.toml` file watching
 - **Persistent Storage** — SQLite-based session metadata persistence; sessions survive gateway restarts
 
 ## Workspace Structure
@@ -20,10 +23,11 @@ Provides CLI chat, WebSocket JSON-RPC gateway, multi-agent management, an extens
 ```
 crates/
   aobot-types/      Shared types (AgentConfig, InboundMessage, OutboundMessage, etc.)
-  aobot-config/     Configuration system (JSON5, .env, hot-reload)
+  aobot-config/     Configuration system (TOML, .env, hot-reload)
   aobot-storage/    SQLite persistence for session metadata and channel bindings
   aobot-gateway/    WebSocket Gateway + JSON-RPC server + ChannelManager
   aobot-cli/        CLI binary (chat, gateway, send, health subcommands)
+  aobot-channel-telegram/  Telegram channel plugin (long polling, message splitting, inline keyboards)
 pi-agent-rs/        Git submodule: AI SDK (pi-agent-core, pi-agent-ai, pi-coding-agent)
 ```
 
@@ -31,7 +35,7 @@ pi-agent-rs/        Git submodule: AI SDK (pi-agent-core, pi-agent-ai, pi-coding
 
 ```
 ~/.aobot/
-  config.json5      Configuration file
+  config.toml       Configuration file
   aobot.db          SQLite database (session metadata, channel bindings)
 ```
 

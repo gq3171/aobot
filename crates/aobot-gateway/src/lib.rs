@@ -32,6 +32,7 @@ use serde::Deserialize;
 use tracing::info;
 
 use aobot_config::AoBotConfig;
+use aobot_storage::AoBotStorage;
 use channel::ChannelManager;
 use session_manager::GatewaySessionManager;
 
@@ -55,7 +56,39 @@ pub async fn start_gateway(
     let host = config.gateway.host.clone();
     let auth_token = config.gateway.auth_token.clone();
 
-    let manager = Arc::new(GatewaySessionManager::new(config, working_dir));
+    // Initialize persistent storage
+    let storage = match aobot_config::ensure_config_dir() {
+        Ok(dir) => {
+            let db_path = dir.join("aobot.db");
+            match AoBotStorage::open(&db_path) {
+                Ok(s) => {
+                    info!("Storage initialized: {}", db_path.display());
+                    Some(Arc::new(s))
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to open storage, running without persistence: {e}");
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("Failed to resolve config dir, running without persistence: {e}");
+            None
+        }
+    };
+
+    let manager = Arc::new(match &storage {
+        Some(s) => GatewaySessionManager::with_storage(config, working_dir, s.clone()),
+        None => GatewaySessionManager::new(config, working_dir),
+    });
+
+    // Restore sessions from persistent storage
+    match manager.restore_sessions().await {
+        Ok(count) if count > 0 => info!("Restored {count} sessions from storage"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("Session restoration failed: {e}"),
+    }
+
     let channel_mgr = Arc::new(ChannelManager::new(256));
 
     // Start config file watcher for hot-reload

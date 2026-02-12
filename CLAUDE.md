@@ -10,6 +10,7 @@ aobot is a Rust workspace (edition 2024) — a multi-channel AI gateway built on
 
 - `crates/aobot-types` — Shared types (AgentConfig, InboundMessage, OutboundMessage, ChannelPlugin types)
 - `crates/aobot-config` — Configuration system (JSON5, dotenvy .env, hot-reload support)
+- `crates/aobot-storage` — SQLite persistence for session metadata and channel bindings
 - `crates/aobot-gateway` — WebSocket Gateway + JSON-RPC server + ChannelManager
 - `crates/aobot-cli` — CLI binary (chat, gateway, send, health subcommands)
 - `pi-agent-rs/` — Git submodule: AI SDK (pi-agent-core, pi-agent-ai, pi-coding-agent)
@@ -20,6 +21,7 @@ aobot is a Rust workspace (edition 2024) — a multi-channel AI gateway built on
 - **JSON-RPC 2.0 over WebSocket**: Gateway uses axum + WebSocket upgrade. Methods: `health`, `chat.send`, `chat.stream`, `chat.history`, `sessions.*`, `agents.*`, `channels.*`, `config.*`.
 - **ChannelPlugin trait**: Extension point in `aobot-gateway::channel` for external platforms (Telegram, Discord, etc.). `ChannelManager` routes `InboundMessage` → agent → `OutboundMessage`.
 - **Config hot-reload**: `notify` crate watches `~/.aobot/config.json5`, auto-applies changes to `GatewaySessionManager`.
+- **Persistent Storage**: `aobot-storage` uses SQLite (`~/.aobot/aobot.db`) for session metadata and channel bindings. Message content is managed by pi-agent's JSONL persistence. `GatewaySessionManager` restores active sessions on startup.
 - **Custom models**: `~/.pi/agent/models.json` for custom LLM model definitions (e.g. MiniMax CN domain override).
 
 ## Build & Development Commands
@@ -28,7 +30,7 @@ aobot is a Rust workspace (edition 2024) — a multi-channel AI gateway built on
 - **Test all:** `cargo test --workspace`
 - **Test single crate:** `cargo test -p aobot-gateway`
 - **Test single test:** `cargo test <test_name>`
-- **Lint:** `cargo clippy -p aobot-config -p aobot-gateway -p aobot-cli -p aobot-types`
+- **Lint:** `cargo clippy -p aobot-types -p aobot-config -p aobot-storage -p aobot-gateway -p aobot-cli`
 - **Format:** `cargo fmt`
 - **Format check:** `cargo fmt -- --check`
 - **Run CLI chat:** `cargo run -- chat --model <model_id>`

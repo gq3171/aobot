@@ -18,6 +18,7 @@ use pi_coding_agent::agent_session::session::{AgentSession, PromptOptions};
 use pi_coding_agent::tools::create_coding_tools;
 
 use aobot_config::AoBotConfig;
+use aobot_storage::{AoBotStorage, SessionMetadata};
 use aobot_types::AgentConfig;
 
 /// Information about a managed session.
@@ -52,6 +53,7 @@ pub struct GatewaySessionManager {
     config: RwLock<AoBotConfig>,
     working_dir: PathBuf,
     registry: Arc<pi_agent_ai::registry::ApiRegistry>,
+    storage: Option<Arc<AoBotStorage>>,
 }
 
 struct ManagedSession {
@@ -69,6 +71,19 @@ impl GatewaySessionManager {
             config: RwLock::new(config),
             working_dir,
             registry,
+            storage: None,
+        }
+    }
+
+    /// Create a new manager with persistent storage.
+    pub fn with_storage(config: AoBotConfig, working_dir: PathBuf, storage: Arc<AoBotStorage>) -> Self {
+        let registry = Arc::new(create_default_registry());
+        Self {
+            sessions: RwLock::new(HashMap::new()),
+            config: RwLock::new(config),
+            working_dir,
+            registry,
+            storage: Some(storage),
         }
     }
 
@@ -135,17 +150,34 @@ impl GatewaySessionManager {
             .unwrap_or_else(|| "You are a helpful assistant.".to_string());
         session.set_system_prompt(prompt);
 
+        let now = chrono::Utc::now().timestamp_millis();
         let managed = ManagedSession {
             session,
             agent_name: agent_name.to_string(),
-            model_id: agent_config.model,
-            created_at: chrono::Utc::now().timestamp_millis(),
+            model_id: agent_config.model.clone(),
+            created_at: now,
         };
 
         self.sessions
             .write()
             .await
             .insert(session_key.to_string(), Arc::new(Mutex::new(managed)));
+
+        // Persist session metadata to storage
+        if let Some(storage) = &self.storage {
+            let meta = SessionMetadata {
+                session_key: session_key.to_string(),
+                agent_name: agent_name.to_string(),
+                model_id: agent_config.model,
+                created_at: now,
+                last_active_at: now,
+                message_count: 0,
+                is_active: true,
+            };
+            if let Err(e) = storage.save_session(&meta).await {
+                tracing::warn!("Failed to persist session metadata: {e}");
+            }
+        }
 
         Ok(())
     }
@@ -205,6 +237,13 @@ impl GatewaySessionManager {
             .prompt(message, PromptOptions::default())
             .await
             .map_err(|e| format!("Prompt error: {e}"))?;
+
+        // Update activity in storage
+        if let Some(storage) = &self.storage {
+            if let Err(e) = storage.update_session_activity(session_key).await {
+                tracing::warn!("Failed to update session activity: {e}");
+            }
+        }
 
         let result = response_text.lock().unwrap().clone();
         Ok(result)
@@ -270,6 +309,13 @@ impl GatewaySessionManager {
             .await
             .map_err(|e| format!("Prompt error: {e}"))?;
 
+        // Update activity in storage
+        if let Some(storage) = &self.storage {
+            if let Err(e) = storage.update_session_activity(session_key).await {
+                tracing::warn!("Failed to update session activity: {e}");
+            }
+        }
+
         let result = response_text.lock().unwrap().clone();
         Ok(result)
     }
@@ -318,7 +364,15 @@ impl GatewaySessionManager {
 
     /// Delete a session.
     pub async fn delete_session(&self, session_key: &str) -> bool {
-        self.sessions.write().await.remove(session_key).is_some()
+        let removed = self.sessions.write().await.remove(session_key).is_some();
+        if removed {
+            if let Some(storage) = &self.storage {
+                if let Err(e) = storage.delete_session(session_key).await {
+                    tracing::warn!("Failed to delete session from storage: {e}");
+                }
+            }
+        }
+        removed
     }
 
     /// Get current config.
@@ -355,5 +409,36 @@ impl GatewaySessionManager {
     /// Check if a session exists.
     pub async fn has_session(&self, session_key: &str) -> bool {
         self.sessions.read().await.contains_key(session_key)
+    }
+
+    /// Restore active sessions from persistent storage.
+    ///
+    /// Reads session metadata from SQLite and re-creates in-memory sessions.
+    /// Called at gateway startup to resume sessions across restarts.
+    pub async fn restore_sessions(&self) -> Result<usize, String> {
+        let storage = match &self.storage {
+            Some(s) => s,
+            None => return Ok(0),
+        };
+
+        let saved = storage
+            .list_sessions()
+            .await
+            .map_err(|e| format!("Failed to load sessions from storage: {e}"))?;
+
+        let count = saved.len();
+        tracing::info!("Restoring {count} sessions from storage");
+
+        for meta in saved {
+            if let Err(e) = self.create_session(&meta.session_key, Some(&meta.agent_name)).await {
+                tracing::warn!(
+                    session_key = %meta.session_key,
+                    "Failed to restore session: {e}"
+                );
+            }
+        }
+
+        tracing::info!("Session restoration complete");
+        Ok(count)
     }
 }

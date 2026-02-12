@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/aobot-types",
     "crates/aobot-config",
+    "crates/aobot-storage",
     "crates/aobot-gateway",
     "crates/aobot-cli",
     "pi-agent-rs/crates/pi-agent-core",
@@ -40,6 +41,7 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 
 # aobot-specific
+rusqlite = { version = "0.32", features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }
 json5 = "0.4"
 dotenvy = "0.15"
@@ -54,4 +56,5 @@ pi-agent-ai = { path = "pi-agent-rs/crates/pi-agent-ai" }
 pi-coding-agent = { path = "pi-agent-rs/crates/pi-coding-agent" }
 aobot-types = { path = "crates/aobot-types" }
 aobot-config = { path = "crates/aobot-config" }
+aobot-storage = { path = "crates/aobot-storage" }
 aobot-gateway = { path = "crates/aobot-gateway" }

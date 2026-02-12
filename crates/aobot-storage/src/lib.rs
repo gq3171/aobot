@@ -126,7 +126,7 @@ impl AoBotStorage {
                     last_active_at = excluded.last_active_at,
                     message_count = excluded.message_count,
                     is_active = excluded.is_active,
-                    pi_session_id = excluded.pi_session_id",
+                    pi_session_id = COALESCE(excluded.pi_session_id, gateway_sessions.pi_session_id)",
                 rusqlite::params![
                     meta.session_key,
                     meta.agent_name,

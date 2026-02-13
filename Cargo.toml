@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+default-members = ["crates/aobot-cli"]
 members = [
     "crates/aobot-types",
     "crates/aobot-config",

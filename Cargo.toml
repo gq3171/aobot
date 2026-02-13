@@ -8,6 +8,7 @@ members = [
     "crates/aobot-gateway",
     "crates/aobot-mcp",
     "crates/aobot-channel-telegram",
+    "crates/aobot-channel-discord",
     "crates/aobot-cli",
     "pi-agent-rs/crates/pi-agent-core",
     "pi-agent-rs/crates/pi-agent-ai",
@@ -30,7 +31,7 @@ futures = "0.3"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
 chrono = { version = "0.4", features = ["serde"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
 bytes = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
@@ -63,3 +64,4 @@ aobot-storage = { path = "crates/aobot-storage" }
 aobot-gateway = { path = "crates/aobot-gateway" }
 aobot-mcp = { path = "crates/aobot-mcp" }
 aobot-channel-telegram = { path = "crates/aobot-channel-telegram" }
+aobot-channel-discord = { path = "crates/aobot-channel-discord" }

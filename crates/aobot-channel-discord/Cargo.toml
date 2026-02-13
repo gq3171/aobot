@@ -1,0 +1,20 @@
+[package]
+name = "aobot-channel-discord"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aobot-types = { workspace = true }
+aobot-gateway = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+reqwest = { workspace = true }
+serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "rustls_backend"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

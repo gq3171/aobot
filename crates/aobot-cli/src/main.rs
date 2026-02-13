@@ -99,6 +99,10 @@ fn main() -> anyhow::Result<()> {
                     "telegram".into(),
                     Box::new(aobot_channel_telegram::create_telegram_channel),
                 );
+                channel_factories.insert(
+                    "discord".into(),
+                    Box::new(aobot_channel_discord::create_discord_channel),
+                );
 
                 aobot_gateway::start_gateway(config, wd, port, channel_factories)
                     .await

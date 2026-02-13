@@ -12,6 +12,7 @@ aobot-types = { workspace = true }
 aobot-config = { workspace = true }
 aobot-gateway = { workspace = true }
 aobot-channel-telegram = { workspace = true }
+aobot-channel-discord = { workspace = true }
 pi-agent-core = { workspace = true }
 pi-agent-ai = { workspace = true }
 pi-coding-agent = { workspace = true }

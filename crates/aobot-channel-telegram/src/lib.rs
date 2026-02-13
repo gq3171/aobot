@@ -29,7 +29,7 @@ use tracing::info;
 use std::collections::HashMap;
 
 use aobot_gateway::session_manager::StreamEvent;
-use aobot_types::{ChannelConfig, ChannelStatus, InboundMessage, OutboundMessage};
+use aobot_types::{Attachment, ChannelConfig, ChannelStatus, InboundMessage, OutboundMessage};
 
 use api::TelegramApi;
 use types::{
@@ -269,10 +269,18 @@ impl aobot_gateway::channel::ChannelPlugin for TelegramChannel {
             .context("missing chat_id in metadata and recipient_id is not a valid i64")?;
 
         let api = TelegramApi::new(&self.bot_token);
-        let chunks = split_message(&message.text, MAX_MESSAGE_LEN);
 
-        for chunk in chunks {
-            send_with_markdown_fallback(&api, chat_id, &chunk).await?;
+        // Send attachments first
+        for attachment in &message.attachments {
+            send_attachment(&api, chat_id, attachment).await?;
+        }
+
+        // Send text (skip if empty and we had attachments)
+        if !message.text.is_empty() {
+            let chunks = split_message(&message.text, MAX_MESSAGE_LEN);
+            for chunk in chunks {
+                send_with_markdown_fallback(&api, chat_id, &chunk).await?;
+            }
         }
 
         Ok(())
@@ -474,6 +482,61 @@ impl aobot_gateway::channel::ChannelPlugin for TelegramChannel {
         }
 
         Ok(())
+    }
+}
+
+/// Decode base64 and send an attachment via the appropriate Telegram API method.
+async fn send_attachment(
+    api: &TelegramApi,
+    chat_id: i64,
+    attachment: &Attachment,
+) -> anyhow::Result<()> {
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+
+    match attachment {
+        Attachment::Image { base64, mime_type } => {
+            let bytes = engine
+                .decode(base64)
+                .context("failed to decode image base64")?;
+            let ext = mime_extension(mime_type);
+            api.send_photo(chat_id, bytes, &format!("image.{ext}"), mime_type, None)
+                .await?;
+        }
+        Attachment::Document {
+            base64,
+            mime_type,
+            file_name,
+        } => {
+            let bytes = engine
+                .decode(base64)
+                .context("failed to decode document base64")?;
+            let fallback = format!("file.{}", mime_extension(mime_type));
+            let name = file_name.as_deref().unwrap_or(&fallback);
+            api.send_document(chat_id, bytes, name, mime_type, None)
+                .await?;
+        }
+        Attachment::Audio { base64, mime_type } => {
+            let bytes = engine
+                .decode(base64)
+                .context("failed to decode audio base64")?;
+            api.send_voice(chat_id, bytes, mime_type, None).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Map common MIME types to file extensions.
+fn mime_extension(mime: &str) -> &str {
+    match mime {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "audio/ogg" => "ogg",
+        "audio/mpeg" => "mp3",
+        "application/pdf" => "pdf",
+        _ => "bin",
     }
 }
 

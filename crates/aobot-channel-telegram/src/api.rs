@@ -210,6 +210,131 @@ impl TelegramApi {
         Ok(bytes.to_vec())
     }
 
+    /// Send a photo (binary data) with optional caption.
+    pub async fn send_photo(
+        &self,
+        chat_id: i64,
+        photo_bytes: Vec<u8>,
+        file_name: &str,
+        mime_type: &str,
+        caption: Option<&str>,
+    ) -> anyhow::Result<TgMessage> {
+        let photo_part = reqwest::multipart::Part::bytes(photo_bytes)
+            .file_name(file_name.to_string())
+            .mime_str(mime_type)
+            .context("invalid mime type for photo")?;
+
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part("photo", photo_part);
+
+        if let Some(cap) = caption {
+            form = form.text("caption", cap.to_string());
+        }
+
+        let resp: ApiResponse<TgMessage> = self
+            .client
+            .post(format!("{}/sendPhoto", self.base_url))
+            .multipart(form)
+            .send()
+            .await
+            .context("sendPhoto request failed")?
+            .json()
+            .await
+            .context("sendPhoto response parse failed")?;
+
+        if !resp.ok {
+            bail!(
+                "sendPhoto failed: {}",
+                resp.description.unwrap_or_else(|| "unknown error".into())
+            );
+        }
+        resp.result.context("sendPhoto returned no result")
+    }
+
+    /// Send a document (binary data) with optional caption.
+    pub async fn send_document(
+        &self,
+        chat_id: i64,
+        doc_bytes: Vec<u8>,
+        file_name: &str,
+        mime_type: &str,
+        caption: Option<&str>,
+    ) -> anyhow::Result<TgMessage> {
+        let doc_part = reqwest::multipart::Part::bytes(doc_bytes)
+            .file_name(file_name.to_string())
+            .mime_str(mime_type)
+            .context("invalid mime type for document")?;
+
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part("document", doc_part);
+
+        if let Some(cap) = caption {
+            form = form.text("caption", cap.to_string());
+        }
+
+        let resp: ApiResponse<TgMessage> = self
+            .client
+            .post(format!("{}/sendDocument", self.base_url))
+            .multipart(form)
+            .send()
+            .await
+            .context("sendDocument request failed")?
+            .json()
+            .await
+            .context("sendDocument response parse failed")?;
+
+        if !resp.ok {
+            bail!(
+                "sendDocument failed: {}",
+                resp.description.unwrap_or_else(|| "unknown error".into())
+            );
+        }
+        resp.result.context("sendDocument returned no result")
+    }
+
+    /// Send an audio/voice file (binary data) with optional caption.
+    pub async fn send_voice(
+        &self,
+        chat_id: i64,
+        voice_bytes: Vec<u8>,
+        mime_type: &str,
+        caption: Option<&str>,
+    ) -> anyhow::Result<TgMessage> {
+        let voice_part = reqwest::multipart::Part::bytes(voice_bytes)
+            .file_name("voice.ogg".to_string())
+            .mime_str(mime_type)
+            .context("invalid mime type for voice")?;
+
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part("voice", voice_part);
+
+        if let Some(cap) = caption {
+            form = form.text("caption", cap.to_string());
+        }
+
+        let resp: ApiResponse<TgMessage> = self
+            .client
+            .post(format!("{}/sendVoice", self.base_url))
+            .multipart(form)
+            .send()
+            .await
+            .context("sendVoice request failed")?
+            .json()
+            .await
+            .context("sendVoice response parse failed")?;
+
+        if !resp.ok {
+            bail!(
+                "sendVoice failed: {}",
+                resp.description.unwrap_or_else(|| "unknown error".into())
+            );
+        }
+        resp.result.context("sendVoice returned no result")
+    }
+
     /// Send a text message.
     pub async fn send_message(&self, params: &SendMessageParams) -> anyhow::Result<TgMessage> {
         let resp: ApiResponse<TgMessage> = self

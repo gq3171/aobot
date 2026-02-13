@@ -22,7 +22,10 @@ use pi_coding_agent::compaction::branch_summary;
 use pi_coding_agent::compaction::compaction as compaction_utils;
 use pi_coding_agent::error::CodingAgentError;
 use pi_coding_agent::retry::RetryConfig as PiRetryConfig;
-use pi_coding_agent::tools::create_coding_tools;
+use pi_coding_agent::extensions::runner::ExtensionRunner;
+use pi_coding_agent::extensions::types::ExtensionContext;
+use pi_coding_agent::extensions::wrapper::{create_extension_tools, wrap_tools_with_extensions};
+use pi_coding_agent::tools::{create_all_tools, create_coding_tools};
 
 use aobot_config::AoBotConfig;
 use aobot_storage::{AoBotStorage, SessionMetadata};
@@ -149,9 +152,62 @@ impl GatewaySessionManager {
         });
         session.set_stream_fn(stream_fn);
 
-        // Set up tools
-        let tools = create_coding_tools(&self.working_dir);
+        // Set up MCP extensions if configured
+        let mcp_configs = config.mcp.clone();
+        let has_mcp = !mcp_configs.is_empty();
+
+        let extension_runner = if has_mcp {
+            let ext_context = ExtensionContext {
+                working_dir: self.working_dir.clone(),
+                session_id: None,
+                model_id: Some(agent_config.model.clone()),
+                config: serde_json::Value::Null,
+            };
+            let mut runner = ExtensionRunner::new(ext_context);
+
+            for (key, mcp_config) in &mcp_configs {
+                let aobot_mcp_config = aobot_mcp::config::McpServerConfig {
+                    name: mcp_config.name.clone(),
+                    transport: match &mcp_config.transport {
+                        aobot_config::McpTransport::Stdio { command, args, env } => {
+                            aobot_mcp::config::McpTransport::Stdio {
+                                command: command.clone(),
+                                args: args.clone(),
+                                env: env.clone(),
+                            }
+                        }
+                        aobot_config::McpTransport::Sse { url } => {
+                            aobot_mcp::config::McpTransport::Sse { url: url.clone() }
+                        }
+                    },
+                };
+                let ext = aobot_mcp::McpExtension::new(aobot_mcp_config);
+                if let Err(e) = runner.add_extension(Box::new(ext)).await {
+                    tracing::warn!(mcp = %key, "Failed to load MCP extension: {e}");
+                }
+            }
+
+            Some(Arc::new(runner))
+        } else {
+            None
+        };
+
+        // Set up tools based on agent config
+        let mut tools = build_tools_for_agent(&self.working_dir, &agent_config.tools);
+
+        // If we have MCP extensions, wrap tools and add extension tools
+        if let Some(ref runner) = extension_runner {
+            tools = wrap_tools_with_extensions(tools, runner.clone());
+            let ext_tools = create_extension_tools(runner.clone());
+            tools.extend(ext_tools);
+        }
+
         session.set_tools(tools);
+
+        // Set extension runner on session if available
+        if let Some(runner) = extension_runner {
+            session.set_extension_runner(runner);
+        }
 
         // Set system prompt
         let prompt = agent_config
@@ -289,6 +345,80 @@ impl GatewaySessionManager {
             .ok_or_else(|| "Session not found after creation".to_string())
     }
 
+    /// Build UserContent from text and optional attachments.
+    fn build_user_content(
+        message: &str,
+        attachments: &[aobot_types::Attachment],
+    ) -> pi_agent_core::types::UserContent {
+        if attachments.is_empty() {
+            return pi_agent_core::types::UserContent::Text(message.to_string());
+        }
+
+        let mut blocks = Vec::new();
+
+        // Add text block if non-empty
+        if !message.is_empty() {
+            blocks.push(pi_agent_core::types::ContentBlock::Text(
+                pi_agent_core::types::TextContent {
+                    text: message.to_string(),
+                    text_signature: None,
+                },
+            ));
+        }
+
+        // Convert attachments to content blocks
+        for att in attachments {
+            match att {
+                aobot_types::Attachment::Image { base64, mime_type } => {
+                    blocks.push(pi_agent_core::types::ContentBlock::Image(
+                        pi_agent_core::types::ImageContent {
+                            data: base64.clone(),
+                            mime_type: mime_type.clone(),
+                        },
+                    ));
+                }
+                aobot_types::Attachment::Document {
+                    base64,
+                    mime_type,
+                    file_name,
+                } => {
+                    // Documents that are images get sent as images
+                    if mime_type.starts_with("image/") {
+                        blocks.push(pi_agent_core::types::ContentBlock::Image(
+                            pi_agent_core::types::ImageContent {
+                                data: base64.clone(),
+                                mime_type: mime_type.clone(),
+                            },
+                        ));
+                    } else {
+                        // Non-image documents: describe as text
+                        let desc = format!(
+                            "[Document: {}]",
+                            file_name.as_deref().unwrap_or("unknown")
+                        );
+                        blocks.push(pi_agent_core::types::ContentBlock::Text(
+                            pi_agent_core::types::TextContent {
+                                text: desc,
+                                text_signature: None,
+                            },
+                        ));
+                    }
+                }
+                aobot_types::Attachment::Audio { .. } => {
+                    // Audio not directly supported in most LLM APIs; note it
+                    blocks.push(pi_agent_core::types::ContentBlock::Text(
+                        pi_agent_core::types::TextContent {
+                            text: "[Audio message attached]".to_string(),
+                            text_signature: None,
+                        },
+                    ));
+                }
+            }
+        }
+
+        pi_agent_core::types::UserContent::Blocks(blocks)
+    }
+
     /// Send a prompt to a session. Creates the session if it doesn't exist.
     /// Returns collected text response.
     pub async fn send_message(
@@ -296,6 +426,19 @@ impl GatewaySessionManager {
         session_key: &str,
         message: &str,
         agent_name: Option<&str>,
+    ) -> Result<String, String> {
+        self.send_message_with_attachments(session_key, message, agent_name, &[])
+            .await
+    }
+
+    /// Send a prompt with attachments to a session.
+    /// Returns collected text response.
+    pub async fn send_message_with_attachments(
+        &self,
+        session_key: &str,
+        message: &str,
+        agent_name: Option<&str>,
+        attachments: &[aobot_types::Attachment],
     ) -> Result<String, String> {
         let session_arc = self.ensure_session(session_key, agent_name).await?;
         let mut managed = session_arc.lock().await;
@@ -318,9 +461,10 @@ impl GatewaySessionManager {
         // Auto-compact before prompting if needed
         self.maybe_compact(session_key, &mut managed).await;
 
+        let content = Self::build_user_content(message, attachments);
         let prompt_result = managed
             .session
-            .prompt(message, PromptOptions::default())
+            .prompt_with_content(content.clone(), PromptOptions::default())
             .await;
 
         // On context overflow, try emergency compaction and retry once
@@ -334,7 +478,7 @@ impl GatewaySessionManager {
                 if managed.session.compact(None).await.is_ok() {
                     managed
                         .session
-                        .prompt(message, PromptOptions::default())
+                        .prompt_with_content(content, PromptOptions::default())
                         .await
                         .map_err(|e| format!("Prompt error after compaction: {e}"))?;
                 } else {
@@ -377,6 +521,26 @@ impl GatewaySessionManager {
         session_key: &str,
         message: &str,
         agent_name: Option<&str>,
+        event_tx: tokio::sync::mpsc::UnboundedSender<StreamEvent>,
+    ) -> Result<String, String> {
+        self.send_message_streaming_with_attachments(
+            session_key,
+            message,
+            agent_name,
+            &[],
+            event_tx,
+        )
+        .await
+    }
+
+    /// Send a prompt with attachments and streaming events.
+    /// Returns the full response text after completion.
+    pub async fn send_message_streaming_with_attachments(
+        &self,
+        session_key: &str,
+        message: &str,
+        agent_name: Option<&str>,
+        attachments: &[aobot_types::Attachment],
         event_tx: tokio::sync::mpsc::UnboundedSender<StreamEvent>,
     ) -> Result<String, String> {
         let session_arc = self.ensure_session(session_key, agent_name).await?;
@@ -437,9 +601,10 @@ impl GatewaySessionManager {
         // Auto-compact before prompting if needed
         self.maybe_compact(session_key, &mut managed).await;
 
+        let content = Self::build_user_content(message, attachments);
         let prompt_result = managed
             .session
-            .prompt(message, PromptOptions::default())
+            .prompt_with_content(content.clone(), PromptOptions::default())
             .await;
 
         // On context overflow, try emergency compaction and retry once
@@ -453,7 +618,7 @@ impl GatewaySessionManager {
                 if managed.session.compact(None).await.is_ok() {
                     managed
                         .session
-                        .prompt(message, PromptOptions::default())
+                        .prompt_with_content(content, PromptOptions::default())
                         .await
                         .map_err(|e| format!("Prompt error after compaction: {e}"))?;
                 } else {
@@ -703,4 +868,34 @@ impl GatewaySessionManager {
         tracing::info!("Session restoration complete");
         Ok(count)
     }
+}
+
+/// Build a tool set for an agent based on its configured tool names.
+///
+/// If `tool_names` is empty, falls back to the default coding tools (bash, read, write, edit).
+/// Otherwise, selects only the named tools from the full built-in tool registry.
+fn build_tools_for_agent(
+    working_dir: &std::path::Path,
+    tool_names: &[String],
+) -> Vec<Arc<dyn pi_agent_core::agent_types::AgentTool>> {
+    if tool_names.is_empty() {
+        return create_coding_tools(working_dir);
+    }
+
+    let all = create_all_tools(working_dir);
+    let mut tools: Vec<Arc<dyn pi_agent_core::agent_types::AgentTool>> = Vec::new();
+    for name in tool_names {
+        if let Some(tool) = all.get(name.as_str()) {
+            tools.push(tool.clone());
+        } else {
+            tracing::warn!(tool = %name, "Unknown tool name in agent config, skipping");
+        }
+    }
+
+    if tools.is_empty() {
+        tracing::warn!("No valid tools found in agent config, using default coding tools");
+        return create_coding_tools(working_dir);
+    }
+
+    tools
 }

@@ -6,6 +6,31 @@ use thiserror::Error;
 
 use aobot_types::{AgentConfig, ChannelConfig};
 
+/// MCP server transport configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum McpTransport {
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: HashMap<String, String>,
+    },
+    Sse {
+        url: String,
+    },
+}
+
+/// Configuration for a single MCP server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    /// Display name for this MCP server.
+    pub name: String,
+    /// Transport configuration.
+    pub transport: McpTransport,
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("IO error: {0}")]
@@ -151,6 +176,9 @@ pub struct AoBotConfig {
     /// Automatic retry settings for transient API errors.
     #[serde(default)]
     pub retry: RetryConfig,
+    /// MCP server configurations.
+    #[serde(default)]
+    pub mcp: HashMap<String, McpServerConfig>,
 }
 
 fn default_agent_name() -> String {
@@ -182,6 +210,7 @@ impl Default for AoBotConfig {
             channels: HashMap::new(),
             compaction: CompactionConfig::default(),
             retry: RetryConfig::default(),
+            mcp: HashMap::new(),
         }
     }
 }

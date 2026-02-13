@@ -19,6 +19,28 @@ pub struct AgentConfig {
     pub tools: Vec<String>,
 }
 
+// ──────────────────── Attachment Types ────────────────────
+
+/// An attachment (image, document, or audio) included with a message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Attachment {
+    Image {
+        base64: String,
+        mime_type: String,
+    },
+    Document {
+        base64: String,
+        mime_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_name: Option<String>,
+    },
+    Audio {
+        base64: String,
+        mime_type: String,
+    },
+}
+
 // ──────────────────── Channel Types ────────────────────
 
 /// Message from an external channel to the gateway.
@@ -45,6 +67,9 @@ pub struct InboundMessage {
     /// Platform-specific metadata.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, serde_json::Value>,
+    /// Attachments (images, documents, audio).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
     /// Message timestamp (unix millis).
     pub timestamp: i64,
 }
@@ -63,6 +88,9 @@ pub struct OutboundMessage {
     /// Session key for conversation continuity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_key: Option<String>,
+    /// Attachments (images, documents, audio).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
     /// Platform-specific metadata.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, serde_json::Value>,
@@ -128,6 +156,7 @@ mod tests {
             agent: None,
             session_key: None,
             metadata: HashMap::new(),
+            attachments: vec![],
             timestamp: 1700000000000,
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -144,6 +173,7 @@ mod tests {
             recipient_id: "user456".into(),
             text: "Hi there!".into(),
             session_key: Some("sess-1".into()),
+            attachments: vec![],
             metadata: HashMap::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -162,6 +192,54 @@ mod tests {
         let json = serde_json::to_string(&err).unwrap();
         let parsed: ChannelStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, ChannelStatus::Error("connection lost".into()));
+    }
+
+    #[test]
+    fn test_attachment_serde() {
+        let img = Attachment::Image {
+            base64: "aGVsbG8=".into(),
+            mime_type: "image/png".into(),
+        };
+        let json = serde_json::to_string(&img).unwrap();
+        assert!(json.contains("\"type\":\"image\""));
+        let parsed: Attachment = serde_json::from_str(&json).unwrap();
+        match parsed {
+            Attachment::Image { base64, mime_type } => {
+                assert_eq!(base64, "aGVsbG8=");
+                assert_eq!(mime_type, "image/png");
+            }
+            _ => panic!("Expected Image variant"),
+        }
+    }
+
+    #[test]
+    fn test_inbound_message_with_attachments() {
+        let msg = InboundMessage {
+            channel_type: "telegram".into(),
+            channel_id: "tg-1".into(),
+            sender_id: "user1".into(),
+            sender_name: None,
+            text: "Look at this".into(),
+            agent: None,
+            session_key: None,
+            metadata: HashMap::new(),
+            attachments: vec![Attachment::Image {
+                base64: "abc".into(),
+                mime_type: "image/jpeg".into(),
+            }],
+            timestamp: 1700000000000,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: InboundMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.attachments.len(), 1);
+    }
+
+    #[test]
+    fn test_inbound_message_without_attachments_compat() {
+        // Verify backward compatibility: no "attachments" field defaults to empty vec
+        let json = r#"{"channel_type":"telegram","channel_id":"x","sender_id":"u","text":"hi","timestamp":0}"#;
+        let parsed: InboundMessage = serde_json::from_str(json).unwrap();
+        assert!(parsed.attachments.is_empty());
     }
 
     #[test]

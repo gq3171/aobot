@@ -6,6 +6,7 @@ members = [
     "crates/aobot-config",
     "crates/aobot-storage",
     "crates/aobot-gateway",
+    "crates/aobot-mcp",
     "crates/aobot-channel-telegram",
     "crates/aobot-cli",
     "pi-agent-rs/crates/pi-agent-core",
@@ -60,4 +61,5 @@ aobot-types = { path = "crates/aobot-types" }
 aobot-config = { path = "crates/aobot-config" }
 aobot-storage = { path = "crates/aobot-storage" }
 aobot-gateway = { path = "crates/aobot-gateway" }
+aobot-mcp = { path = "crates/aobot-mcp" }
 aobot-channel-telegram = { path = "crates/aobot-channel-telegram" }

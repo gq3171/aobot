@@ -7,7 +7,9 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use aobot_types::InboundMessage;
+use base64::Engine;
+
+use aobot_types::{Attachment, InboundMessage};
 
 use crate::api::TelegramApi;
 use crate::types::GetUpdatesParams;
@@ -54,8 +56,59 @@ pub async fn run_polling_loop(
                     let Some(msg) = update.message else {
                         continue;
                     };
-                    let Some(text) = msg.text else {
-                        continue;
+
+                    // Determine text content: prefer text, fall back to caption for media messages
+                    let text = msg.text.clone().or_else(|| msg.caption.clone());
+
+                    // Build attachments from photo/document/voice
+                    let mut attachments: Vec<Attachment> = Vec::new();
+
+                    // Handle photo messages (pick largest resolution)
+                    if let Some(ref photos) = msg.photo {
+                        if let Some(largest) = photos.iter().max_by_key(|p| p.width * p.height) {
+                            match download_as_attachment(api, &largest.file_id, "image/jpeg").await {
+                                Ok(att) => attachments.push(att),
+                                Err(e) => warn!(channel_id, "Failed to download photo: {e}"),
+                            }
+                        }
+                    }
+
+                    // Handle document messages
+                    if let Some(ref doc) = msg.document {
+                        let mime = doc.mime_type.as_deref().unwrap_or("application/octet-stream");
+                        match download_as_attachment(api, &doc.file_id, mime).await {
+                            Ok(att) => {
+                                // Convert to Document variant with file_name
+                                if let Attachment::Image { base64, mime_type } = att {
+                                    attachments.push(Attachment::Document {
+                                        base64,
+                                        mime_type,
+                                        file_name: doc.file_name.clone(),
+                                    });
+                                }
+                            }
+                            Err(e) => warn!(channel_id, "Failed to download document: {e}"),
+                        }
+                    }
+
+                    // Handle voice messages
+                    if let Some(ref voice) = msg.voice {
+                        let mime = voice.mime_type.as_deref().unwrap_or("audio/ogg");
+                        match download_as_attachment(api, &voice.file_id, mime).await {
+                            Ok(att) => {
+                                if let Attachment::Image { base64, mime_type } = att {
+                                    attachments.push(Attachment::Audio { base64, mime_type });
+                                }
+                            }
+                            Err(e) => warn!(channel_id, "Failed to download voice: {e}"),
+                        }
+                    }
+
+                    // Skip messages with no text and no attachments
+                    let text = match text {
+                        Some(t) => t,
+                        None if !attachments.is_empty() => String::new(),
+                        None => continue,
                     };
 
                     let sender_id = msg
@@ -105,6 +158,7 @@ pub async fn run_polling_loop(
                         agent: agent.clone(),
                         session_key: None,
                         metadata,
+                        attachments,
                         timestamp: msg.date * 1000,
                     };
 
@@ -138,6 +192,29 @@ pub async fn run_polling_loop(
     }
 
     info!(channel_id, "Telegram polling loop stopped");
+}
+
+/// Download a Telegram file by file_id and return it as an Attachment::Image.
+///
+/// The caller is responsible for converting to the appropriate variant
+/// (Document, Audio) based on the message type.
+async fn download_as_attachment(
+    api: &TelegramApi,
+    file_id: &str,
+    mime_type: &str,
+) -> anyhow::Result<Attachment> {
+    let file = api.get_file(file_id).await?;
+    let file_path = file
+        .file_path
+        .ok_or_else(|| anyhow::anyhow!("No file_path in getFile response"))?;
+
+    let bytes = api.download_file(&file_path).await?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+    Ok(Attachment::Image {
+        base64: b64,
+        mime_type: mime_type.to_string(),
+    })
 }
 
 #[cfg(test)]

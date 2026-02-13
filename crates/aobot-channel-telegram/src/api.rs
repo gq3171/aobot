@@ -7,7 +7,7 @@ use reqwest::Client;
 
 use crate::types::{
     ApiResponse, BotInfo, EditMessageTextParams, GetUpdatesParams, SendChatActionParams,
-    SendMessageParams, SetChatMenuButtonParams, SetMyCommandsParams, TgMessage, Update,
+    SendMessageParams, SetChatMenuButtonParams, SetMyCommandsParams, TgFile, TgMessage, Update,
 };
 
 /// HTTP client for the Telegram Bot API.
@@ -164,6 +164,50 @@ impl TelegramApi {
             );
         }
         resp.result.context("editMessageText returned no result")
+    }
+
+    /// Get file metadata by file_id (needed to download files).
+    pub async fn get_file(&self, file_id: &str) -> anyhow::Result<TgFile> {
+        let resp: ApiResponse<TgFile> = self
+            .client
+            .post(format!("{}/getFile", self.base_url))
+            .json(&serde_json::json!({"file_id": file_id}))
+            .send()
+            .await
+            .context("getFile request failed")?
+            .json()
+            .await
+            .context("getFile response parse failed")?;
+
+        if !resp.ok {
+            bail!(
+                "getFile failed: {}",
+                resp.description.unwrap_or_else(|| "unknown error".into())
+            );
+        }
+        resp.result.context("getFile returned no result")
+    }
+
+    /// Download a file by its file_path (obtained from getFile).
+    pub async fn download_file(&self, file_path: &str) -> anyhow::Result<Vec<u8>> {
+        // Telegram file download URL format:
+        // https://api.telegram.org/file/bot<token>/<file_path>
+        let url = self
+            .base_url
+            .replace("/bot", "/file/bot");
+        let download_url = format!("{url}/{file_path}");
+
+        let bytes = self
+            .client
+            .get(&download_url)
+            .send()
+            .await
+            .context("file download request failed")?
+            .bytes()
+            .await
+            .context("file download body failed")?;
+
+        Ok(bytes.to_vec())
     }
 
     /// Send a text message.

@@ -25,3 +25,4 @@ notify-debouncer-mini = { workspace = true }
 tokio-stream = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
+aobot-mcp = { workspace = true }

@@ -292,6 +292,7 @@ impl ChannelManager {
                             recipient_id: inbound.sender_id,
                             text: reply_text,
                             session_key: Some(session_key),
+                            attachments: vec![],
                             metadata: inbound.metadata,
                         };
                         if let Err(e) = channel_mgr.send_message(outbound).await {
@@ -323,7 +324,9 @@ impl ChannelManager {
 
                     // Run the AI prompt with streaming events
                     match manager
-                        .send_message_streaming(&session_key, &inbound.text, agent, event_tx)
+                        .send_message_streaming_with_attachments(
+                            &session_key, &inbound.text, agent, &inbound.attachments, event_tx,
+                        )
                         .await
                     {
                         Ok(_response_text) => {
@@ -356,7 +359,12 @@ impl ChannelManager {
                         });
                     }
 
-                    match manager.send_message(&session_key, &inbound.text, agent).await {
+                    match manager
+                        .send_message_with_attachments(
+                            &session_key, &inbound.text, agent, &inbound.attachments,
+                        )
+                        .await
+                    {
                         Ok(response_text) => {
                             typing_cancel.cancel();
                             let outbound = OutboundMessage {
@@ -365,6 +373,7 @@ impl ChannelManager {
                                 recipient_id: inbound.sender_id,
                                 text: response_text,
                                 session_key: Some(session_key),
+                                attachments: vec![],
                                 metadata: inbound.metadata,
                             };
 
@@ -499,6 +508,7 @@ mod tests {
             recipient_id: "user-1".into(),
             text: "Hello!".into(),
             session_key: None,
+            attachments: vec![],
             metadata: HashMap::new(),
         };
 
@@ -518,6 +528,7 @@ mod tests {
             recipient_id: "user-1".into(),
             text: "Hello!".into(),
             session_key: None,
+            attachments: vec![],
             metadata: HashMap::new(),
         };
 

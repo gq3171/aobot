@@ -42,7 +42,62 @@ pub struct TgMessage {
     #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]
+    pub caption: Option<String>,
+    #[serde(default)]
     pub entities: Vec<MessageEntity>,
+    #[serde(default)]
+    pub photo: Option<Vec<PhotoSize>>,
+    #[serde(default)]
+    pub document: Option<Document>,
+    #[serde(default)]
+    pub voice: Option<Voice>,
+}
+
+/// A photo size variant (Telegram sends multiple resolutions).
+#[derive(Debug, Deserialize)]
+pub struct PhotoSize {
+    pub file_id: String,
+    pub file_unique_id: String,
+    pub width: i64,
+    pub height: i64,
+    #[serde(default)]
+    pub file_size: Option<i64>,
+}
+
+/// A document file.
+#[derive(Debug, Deserialize)]
+pub struct Document {
+    pub file_id: String,
+    pub file_unique_id: String,
+    #[serde(default)]
+    pub file_name: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub file_size: Option<i64>,
+}
+
+/// A voice message.
+#[derive(Debug, Deserialize)]
+pub struct Voice {
+    pub file_id: String,
+    pub file_unique_id: String,
+    pub duration: i64,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub file_size: Option<i64>,
+}
+
+/// A Telegram file object returned by getFile.
+#[derive(Debug, Deserialize)]
+pub struct TgFile {
+    pub file_id: String,
+    pub file_unique_id: String,
+    #[serde(default)]
+    pub file_size: Option<i64>,
+    #[serde(default)]
+    pub file_path: Option<String>,
 }
 
 /// A message entity (bold, command, mention, etc.).
@@ -188,6 +243,55 @@ mod tests {
         let msg = update.message.unwrap();
         assert_eq!(msg.text.as_deref(), Some("Hello bot"));
         assert_eq!(msg.from.unwrap().display_name(), "Alice Smith");
+    }
+
+    #[test]
+    fn test_message_with_photo() {
+        let json = r#"{
+            "message_id": 1,
+            "date": 1700000000,
+            "chat": {"id": 42, "type": "private"},
+            "photo": [
+                {"file_id": "small", "file_unique_id": "s1", "width": 90, "height": 90},
+                {"file_id": "large", "file_unique_id": "l1", "width": 800, "height": 600, "file_size": 50000}
+            ],
+            "caption": "Check this out"
+        }"#;
+        let msg: TgMessage = serde_json::from_str(json).unwrap();
+        assert!(msg.text.is_none());
+        assert_eq!(msg.caption.as_deref(), Some("Check this out"));
+        let photos = msg.photo.unwrap();
+        assert_eq!(photos.len(), 2);
+        assert_eq!(photos[1].file_id, "large");
+        assert_eq!(photos[1].width, 800);
+    }
+
+    #[test]
+    fn test_message_with_document() {
+        let json = r#"{
+            "message_id": 2,
+            "date": 1700000000,
+            "chat": {"id": 42, "type": "private"},
+            "document": {
+                "file_id": "doc1",
+                "file_unique_id": "du1",
+                "file_name": "report.pdf",
+                "mime_type": "application/pdf",
+                "file_size": 123456
+            }
+        }"#;
+        let msg: TgMessage = serde_json::from_str(json).unwrap();
+        let doc = msg.document.unwrap();
+        assert_eq!(doc.file_id, "doc1");
+        assert_eq!(doc.file_name.as_deref(), Some("report.pdf"));
+        assert_eq!(doc.mime_type.as_deref(), Some("application/pdf"));
+    }
+
+    #[test]
+    fn test_tg_file() {
+        let json = r#"{"file_id": "abc", "file_unique_id": "xyz", "file_size": 1000, "file_path": "photos/file_0.jpg"}"#;
+        let file: TgFile = serde_json::from_str(json).unwrap();
+        assert_eq!(file.file_path.as_deref(), Some("photos/file_0.jpg"));
     }
 
     #[test]

@@ -1,0 +1,21 @@
+[package]
+name = "aobot-mcp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pi-coding-agent = { workspace = true }
+pi-agent-core = { workspace = true }
+rmcp = { version = "0.15", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+toml = { workspace = true }

@@ -42,24 +42,20 @@ pub fn mcp_result_to_value(result: &rmcp::model::CallToolResult) -> Value {
     let text_parts: Vec<String> = result
         .content
         .iter()
-        .filter_map(|content| {
-            match &content.raw {
-                RawContent::Text(text_content) => Some(text_content.text.clone()),
-                RawContent::Image(img) => Some(format!("[Image: {}]", img.mime_type)),
-                RawContent::Resource(res) => {
-                    let uri = match &res.resource {
-                        rmcp::model::ResourceContents::TextResourceContents { uri, text, .. } => {
-                            return Some(format!("[Resource: {uri}]\n{text}"));
-                        }
-                        rmcp::model::ResourceContents::BlobResourceContents { uri, .. } => uri,
-                    };
-                    Some(format!("[Resource: {uri}]"))
-                }
-                RawContent::Audio(audio) => Some(format!("[Audio: {}]", audio.mime_type)),
-                RawContent::ResourceLink(link) => {
-                    Some(format!("[ResourceLink: {}]", link.uri))
-                }
+        .filter_map(|content| match &content.raw {
+            RawContent::Text(text_content) => Some(text_content.text.clone()),
+            RawContent::Image(img) => Some(format!("[Image: {}]", img.mime_type)),
+            RawContent::Resource(res) => {
+                let uri = match &res.resource {
+                    rmcp::model::ResourceContents::TextResourceContents { uri, text, .. } => {
+                        return Some(format!("[Resource: {uri}]\n{text}"));
+                    }
+                    rmcp::model::ResourceContents::BlobResourceContents { uri, .. } => uri,
+                };
+                Some(format!("[Resource: {uri}]"))
             }
+            RawContent::Audio(audio) => Some(format!("[Audio: {}]", audio.mime_type)),
+            RawContent::ResourceLink(link) => Some(format!("[ResourceLink: {}]", link.uri)),
         })
         .collect();
 

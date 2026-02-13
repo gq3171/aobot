@@ -2,7 +2,93 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+// ──────────────────── Tool Policy Types ────────────────────
+
+/// Pre-defined tool profiles.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolProfile {
+    /// Only `session_status`.
+    Minimal,
+    /// File system, runtime, sessions, memory, image.
+    Coding,
+    /// Messaging and limited session tools.
+    Messaging,
+    /// All tools allowed (default).
+    #[default]
+    Full,
+}
+
+/// Per-provider tool policy override.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolPolicyOverride {
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub deny: Vec<String>,
+}
+
+/// Tool configuration for an agent.
+///
+/// Supports both the new structured format and backward-compatible `Vec<String>`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentToolsConfig {
+    /// Base profile.
+    #[serde(default)]
+    pub profile: ToolProfile,
+    /// Explicit allow list (replaces profile base when non-empty for non-Full profiles).
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Additional tools on top of profile/allow.
+    #[serde(default)]
+    pub also_allow: Vec<String>,
+    /// Tools to deny (takes priority over everything).
+    #[serde(default)]
+    pub deny: Vec<String>,
+    /// Per-provider overrides.
+    #[serde(default)]
+    pub by_provider: HashMap<String, ToolPolicyOverride>,
+}
+
+/// Sub-agent configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SubagentConfig {
+    /// Allowed sub-agent IDs. `["*"]` allows all.
+    #[serde(default)]
+    pub allow_agents: Vec<String>,
+    /// Model override for sub-agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Thinking level override for sub-agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+}
+
+/// Sandbox configuration for an agent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SandboxConfig {
+    /// Sandbox mode: "none", "read-only", "workspace".
+    #[serde(default = "default_sandbox_mode")]
+    pub mode: String,
+    /// Allowed directories for file operations.
+    #[serde(default)]
+    pub allowed_dirs: Vec<String>,
+}
+
+fn default_sandbox_mode() -> String {
+    "none".to_string()
+}
+
 // ──────────────────── Agent Types ────────────────────
+
+/// Helper enum for deserializing `tools` field which can be
+/// either `Vec<String>` (legacy) or `AgentToolsConfig` (new).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum ToolsField {
+    Legacy(Vec<String>),
+    Config(AgentToolsConfig),
+}
 
 /// Configuration for a single agent instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,9 +100,46 @@ pub struct AgentConfig {
     /// Optional system prompt override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    /// Tool names to enable for this agent.
-    #[serde(default)]
-    pub tools: Vec<String>,
+    /// Tool configuration — supports both legacy `Vec<String>` and new `AgentToolsConfig`.
+    #[serde(default, deserialize_with = "deserialize_tools")]
+    pub tools: AgentToolsConfig,
+    /// Sub-agent configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagents: Option<SubagentConfig>,
+    /// Sandbox configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxConfig>,
+}
+
+fn deserialize_tools<'de, D>(deserializer: D) -> Result<AgentToolsConfig, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let field = ToolsField::deserialize(deserializer)?;
+    Ok(match field {
+        ToolsField::Legacy(names) => AgentToolsConfig {
+            profile: ToolProfile::Full,
+            allow: names,
+            ..Default::default()
+        },
+        ToolsField::Config(config) => config,
+    })
+}
+
+/// Helper to get the legacy tool names from AgentToolsConfig for backward compatibility.
+impl AgentToolsConfig {
+    /// Returns the allow list, which for legacy configs contains the tool names.
+    pub fn tool_names(&self) -> &[String] {
+        &self.allow
+    }
+
+    /// Check if this is a legacy-style config (Full profile with just an allow list).
+    pub fn is_legacy(&self) -> bool {
+        self.profile == ToolProfile::Full
+            && self.also_allow.is_empty()
+            && self.deny.is_empty()
+            && self.by_provider.is_empty()
+    }
 }
 
 // ──────────────────── Attachment Types ────────────────────
@@ -249,5 +372,53 @@ mod tests {
         assert!(config.enabled);
         assert!(config.agent.is_none());
         assert!(config.settings.is_empty());
+    }
+
+    #[test]
+    fn test_agent_config_legacy_tools() {
+        let toml_str = r#"
+name = "coder"
+model = "anthropic/claude-sonnet-4"
+tools = ["bash", "read"]
+"#;
+        let config: AgentConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.tools.allow, vec!["bash", "read"]);
+        assert_eq!(config.tools.profile, ToolProfile::Full);
+        assert!(config.tools.is_legacy());
+    }
+
+    #[test]
+    fn test_agent_config_new_tools() {
+        let toml_str = r#"
+name = "coder"
+model = "anthropic/claude-sonnet-4"
+
+[tools]
+profile = "coding"
+also_allow = ["web_search"]
+deny = ["bash"]
+"#;
+        let config: AgentConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.tools.profile, ToolProfile::Coding);
+        assert_eq!(config.tools.also_allow, vec!["web_search"]);
+        assert_eq!(config.tools.deny, vec!["bash"]);
+        assert!(!config.tools.is_legacy());
+    }
+
+    #[test]
+    fn test_agent_config_with_subagents() {
+        let toml_str = r#"
+name = "orchestrator"
+model = "anthropic/claude-sonnet-4"
+
+[subagents]
+allow_agents = ["*"]
+model = "anthropic/claude-haiku"
+"#;
+        let config: AgentConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.subagents.is_some());
+        let sub = config.subagents.unwrap();
+        assert_eq!(sub.allow_agents, vec!["*"]);
+        assert_eq!(sub.model, Some("anthropic/claude-haiku".to_string()));
     }
 }

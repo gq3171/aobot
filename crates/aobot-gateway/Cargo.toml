@@ -26,3 +26,7 @@ tokio-stream = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 aobot-mcp = { workspace = true }
+aobot-tools = { workspace = true }
+aobot-hooks = { workspace = true }
+aobot-skills = { workspace = true }
+aobot-cron = { workspace = true }

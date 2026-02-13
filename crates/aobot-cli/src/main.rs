@@ -91,14 +91,19 @@ fn main() -> anyhow::Result<()> {
                     None => std::env::current_dir()?,
                 };
 
+                #[allow(unused_mut)]
                 let mut channel_factories: std::collections::HashMap<
                     String,
                     aobot_gateway::ChannelFactory,
                 > = std::collections::HashMap::new();
+
+                #[cfg(feature = "channel-telegram")]
                 channel_factories.insert(
                     "telegram".into(),
                     Box::new(aobot_channel_telegram::create_telegram_channel),
                 );
+
+                #[cfg(feature = "channel-discord")]
                 channel_factories.insert(
                     "discord".into(),
                     Box::new(aobot_channel_discord::create_discord_channel),

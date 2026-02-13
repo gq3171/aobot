@@ -21,8 +21,7 @@ use crate::config::{McpServerConfig, McpTransport};
 use rmcp::ServiceExt;
 
 /// Type alias for the running MCP client service.
-type McpRunningService =
-    rmcp::service::RunningService<rmcp::RoleClient, ()>;
+type McpRunningService = rmcp::service::RunningService<rmcp::RoleClient, ()>;
 
 /// An MCP client wrapped as a pi-coding-agent Extension.
 ///
@@ -108,7 +107,10 @@ impl Extension for McpExtension {
         tool_name: &str,
         params: Value,
     ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-        let service = self.service.as_ref().ok_or("MCP extension not initialized")?;
+        let service = self
+            .service
+            .as_ref()
+            .ok_or("MCP extension not initialized")?;
 
         let arguments = if params.is_object() {
             Some(

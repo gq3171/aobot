@@ -1,9 +1,9 @@
 //! JSON-RPC method handlers.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::channel::ChannelManager;
-use crate::jsonrpc::{JsonRpcResponse, INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND};
+use crate::jsonrpc::{INTERNAL_ERROR, INVALID_PARAMS, JsonRpcResponse, METHOD_NOT_FOUND};
 use crate::session_manager::GatewaySessionManager;
 
 /// Route a JSON-RPC request to the appropriate handler.
@@ -92,7 +92,7 @@ async fn handle_chat_history(
     let session_key = match params.get("session_key").and_then(|v| v.as_str()) {
         Some(k) => k,
         None => {
-            return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing 'session_key' parameter")
+            return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing 'session_key' parameter");
         }
     };
 
@@ -131,7 +131,7 @@ async fn handle_sessions_delete(
     let session_key = match params.get("session_key").and_then(|v| v.as_str()) {
         Some(k) => k,
         None => {
-            return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing 'session_key' parameter")
+            return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing 'session_key' parameter");
         }
     };
 
@@ -205,7 +205,12 @@ async fn handle_agents_add(
         name: name.clone(),
         model,
         system_prompt,
-        tools,
+        tools: aobot_types::AgentToolsConfig {
+            allow: tools,
+            ..Default::default()
+        },
+        subagents: None,
+        sandbox: None,
     };
 
     manager.add_agent(name.clone(), agent_config).await;
@@ -260,7 +265,9 @@ async fn handle_config_set(
 ) -> JsonRpcResponse {
     let config: aobot_config::AoBotConfig = match serde_json::from_value(params.clone()) {
         Ok(c) => c,
-        Err(e) => return JsonRpcResponse::error(id, INVALID_PARAMS, format!("Invalid config: {e}")),
+        Err(e) => {
+            return JsonRpcResponse::error(id, INVALID_PARAMS, format!("Invalid config: {e}"));
+        }
     };
 
     manager.set_config(config).await;
@@ -290,7 +297,7 @@ async fn handle_channels_status(
     let channel_id = match params.get("channel_id").and_then(|v| v.as_str()) {
         Some(id) => id,
         None => {
-            return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing 'channel_id' parameter")
+            return JsonRpcResponse::error(id, INVALID_PARAMS, "Missing 'channel_id' parameter");
         }
     };
 
@@ -358,7 +365,14 @@ mod tests {
     async fn test_handle_method_not_found() {
         let manager = create_test_manager();
         let channel_mgr = create_test_channel_mgr();
-        let resp = handle_rpc("nonexistent.method", &json!({}), json!(1), &manager, &channel_mgr).await;
+        let resp = handle_rpc(
+            "nonexistent.method",
+            &json!({}),
+            json!(1),
+            &manager,
+            &channel_mgr,
+        )
+        .await;
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, METHOD_NOT_FOUND);
     }

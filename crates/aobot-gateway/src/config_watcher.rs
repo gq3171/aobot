@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
+use notify_debouncer_mini::{DebouncedEventKind, new_debouncer};
 use tracing::{info, warn};
 
 use crate::session_manager::GatewaySessionManager;
@@ -42,11 +42,7 @@ pub fn start_config_watcher(
     Some(handle)
 }
 
-fn run_watcher(
-    watch_dir: PathBuf,
-    config_path: PathBuf,
-    manager: Arc<GatewaySessionManager>,
-) {
+fn run_watcher(watch_dir: PathBuf, config_path: PathBuf, manager: Arc<GatewaySessionManager>) {
     let (tx, rx) = std::sync::mpsc::channel();
 
     let mut debouncer = match new_debouncer(Duration::from_secs(1), tx) {

@@ -26,7 +26,10 @@ pub async fn run_send(
     let mut request = tungstenite::http::Request::builder()
         .uri(&ws_url)
         .header("Sec-WebSocket-Version", "13")
-        .header("Sec-WebSocket-Key", tungstenite::handshake::client::generate_key())
+        .header(
+            "Sec-WebSocket-Key",
+            tungstenite::handshake::client::generate_key(),
+        )
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .header("Host", extract_host(&ws_url).unwrap_or("localhost"));
@@ -75,7 +78,10 @@ pub async fn run_send(
                 if let Some(error) = response.get("error") {
                     eprintln!(
                         "Error: {}",
-                        error.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error")
+                        error
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("Unknown error")
                     );
                     std::process::exit(1);
                 }
@@ -103,7 +109,8 @@ pub async fn run_send(
 
 /// Extract host from a URL string.
 fn extract_host(url: &str) -> Option<&str> {
-    let after_scheme = url.strip_prefix("ws://")
+    let after_scheme = url
+        .strip_prefix("ws://")
         .or_else(|| url.strip_prefix("wss://"))?;
     after_scheme.split('/').next()
 }
@@ -114,7 +121,10 @@ mod tests {
 
     #[test]
     fn test_extract_host() {
-        assert_eq!(extract_host("ws://127.0.0.1:3000/ws"), Some("127.0.0.1:3000"));
+        assert_eq!(
+            extract_host("ws://127.0.0.1:3000/ws"),
+            Some("127.0.0.1:3000")
+        );
         assert_eq!(extract_host("wss://example.com/ws"), Some("example.com"));
         assert_eq!(extract_host("http://invalid"), None);
     }

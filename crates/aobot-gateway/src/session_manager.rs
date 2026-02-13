@@ -16,20 +16,22 @@ use pi_agent_core::agent_types::{AgentEvent, AgentMessage, StreamFnBox};
 use pi_agent_core::event_stream::create_assistant_message_event_stream;
 use pi_agent_core::types::*;
 use pi_coding_agent::agent_session::events::AgentSessionEvent;
-use pi_coding_agent::agent_session::sdk::{create_agent_session, CreateSessionOptions};
+use pi_coding_agent::agent_session::sdk::{CreateSessionOptions, create_agent_session};
 use pi_coding_agent::agent_session::session::{AgentSession, PromptOptions, SummaryFn};
 use pi_coding_agent::compaction::branch_summary;
 use pi_coding_agent::compaction::compaction as compaction_utils;
 use pi_coding_agent::error::CodingAgentError;
-use pi_coding_agent::retry::RetryConfig as PiRetryConfig;
 use pi_coding_agent::extensions::runner::ExtensionRunner;
 use pi_coding_agent::extensions::types::ExtensionContext;
 use pi_coding_agent::extensions::wrapper::{create_extension_tools, wrap_tools_with_extensions};
+use pi_coding_agent::retry::RetryConfig as PiRetryConfig;
 use pi_coding_agent::tools::{create_all_tools, create_coding_tools};
 
 use aobot_config::AoBotConfig;
 use aobot_storage::{AoBotStorage, SessionMetadata};
-use aobot_types::AgentConfig;
+use aobot_types::{AgentConfig, AgentToolsConfig};
+
+use aobot_tools::context::GatewayToolContext;
 
 /// Information about a managed session.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -64,6 +66,8 @@ pub struct GatewaySessionManager {
     working_dir: PathBuf,
     registry: Arc<pi_agent_ai::registry::ApiRegistry>,
     storage: Option<Arc<AoBotStorage>>,
+    /// Sender for gateway operations — shared with all gateway tools.
+    ops_tx: Option<tokio::sync::mpsc::UnboundedSender<aobot_tools::context::GatewayOp>>,
 }
 
 struct ManagedSession {
@@ -84,11 +88,16 @@ impl GatewaySessionManager {
             working_dir,
             registry,
             storage: None,
+            ops_tx: None,
         }
     }
 
     /// Create a new manager with persistent storage.
-    pub fn with_storage(config: AoBotConfig, working_dir: PathBuf, storage: Arc<AoBotStorage>) -> Self {
+    pub fn with_storage(
+        config: AoBotConfig,
+        working_dir: PathBuf,
+        storage: Arc<AoBotStorage>,
+    ) -> Self {
         let registry = Arc::new(create_default_registry());
         Self {
             sessions: RwLock::new(HashMap::new()),
@@ -96,7 +105,16 @@ impl GatewaySessionManager {
             working_dir,
             registry,
             storage: Some(storage),
+            ops_tx: None,
         }
+    }
+
+    /// Set the gateway operations sender for gateway tools.
+    pub fn set_ops_tx(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<aobot_tools::context::GatewayOp>,
+    ) {
+        self.ops_tx = Some(tx);
     }
 
     /// Create a new agent session with the given key.
@@ -116,12 +134,17 @@ impl GatewaySessionManager {
                 name: agent_name.to_string(),
                 model: "anthropic/claude-sonnet-4".to_string(),
                 system_prompt: Some("You are a helpful assistant.".to_string()),
-                tools: vec![
-                    "bash".to_string(),
-                    "read".to_string(),
-                    "write".to_string(),
-                    "edit".to_string(),
-                ],
+                tools: AgentToolsConfig {
+                    allow: vec![
+                        "bash".to_string(),
+                        "read".to_string(),
+                        "write".to_string(),
+                        "edit".to_string(),
+                    ],
+                    ..Default::default()
+                },
+                subagents: None,
+                sandbox: None,
             });
 
         let mut session = create_agent_session(CreateSessionOptions {
@@ -193,7 +216,44 @@ impl GatewaySessionManager {
         };
 
         // Set up tools based on agent config
-        let mut tools = build_tools_for_agent(&self.working_dir, &agent_config.tools);
+        let mut tools =
+            build_tools_for_agent(&self.working_dir, &agent_config.tools, &config.tools);
+
+        // Add gateway tools if ops channel is available
+        if let Some(ops_tx) = &self.ops_tx {
+            let gateway_ctx = Arc::new(GatewayToolContext {
+                current_session_key: session_key.to_string(),
+                current_agent_id: agent_name.to_string(),
+                config: Arc::new(tokio::sync::RwLock::new(config.clone())),
+                ops_tx: ops_tx.clone(),
+            });
+            let gateway_tools = aobot_tools::tools::create_gateway_tools(gateway_ctx);
+            let gateway_tool_names: Vec<String> = gateway_tools.keys().cloned().collect();
+            // Add gateway tools that pass the policy filter
+            let policy = aobot_tools::policy::ToolPolicy {
+                profile: match &agent_config.tools.profile {
+                    aobot_types::ToolProfile::Minimal => aobot_tools::policy::ToolProfile::Minimal,
+                    aobot_types::ToolProfile::Coding => aobot_tools::policy::ToolProfile::Coding,
+                    aobot_types::ToolProfile::Messaging => {
+                        aobot_tools::policy::ToolProfile::Messaging
+                    }
+                    aobot_types::ToolProfile::Full => aobot_tools::policy::ToolProfile::Full,
+                },
+                allow: agent_config.tools.allow.clone(),
+                also_allow: agent_config.tools.also_allow.clone(),
+                deny: {
+                    let mut deny = agent_config.tools.deny.clone();
+                    deny.extend(config.tools.global_deny.clone());
+                    deny
+                },
+                by_provider: Default::default(),
+            };
+            for (name, tool) in gateway_tools {
+                if aobot_tools::policy::is_tool_allowed(&name, &policy, &gateway_tool_names) {
+                    tools.push(tool);
+                }
+            }
+        }
 
         // If we have MCP extensions, wrap tools and add extension tools
         if let Some(ref runner) = extension_runner {
@@ -218,64 +278,76 @@ impl GatewaySessionManager {
         // Set up summary function for compaction (uses the same LLM)
         let summary_registry = self.registry.clone();
         let summary_model_id = agent_config.model.clone();
-        let summary_fn: SummaryFn = Arc::new(move |messages: Vec<AgentMessage>, previous_summary: Option<String>| {
-            let registry = summary_registry.clone();
-            let model_id = summary_model_id.clone();
-            Box::pin(async move {
-                let summary_context = branch_summary::serialize_conversation(&messages);
-                let summary_prompt = branch_summary::generate_summary_prompt(
-                    &summary_context,
-                    previous_summary.as_deref(),
-                );
+        let summary_fn: SummaryFn = Arc::new(
+            move |messages: Vec<AgentMessage>, previous_summary: Option<String>| {
+                let registry = summary_registry.clone();
+                let model_id = summary_model_id.clone();
+                Box::pin(async move {
+                    let summary_context = branch_summary::serialize_conversation(&messages);
+                    let summary_prompt = branch_summary::generate_summary_prompt(
+                        &summary_context,
+                        previous_summary.as_deref(),
+                    );
 
-                // Use the model registry to resolve the model
-                let model_registry = pi_coding_agent::model::registry::ModelRegistry::new();
-                let model = model_registry.find(&model_id).cloned().ok_or_else(|| {
-                    CodingAgentError::Model(format!("Failed to resolve model for summary: {model_id}"))
-                })?;
+                    // Use the model registry to resolve the model
+                    let model_registry = pi_coding_agent::model::registry::ModelRegistry::new();
+                    let model = model_registry.find(&model_id).cloned().ok_or_else(|| {
+                        CodingAgentError::Model(format!(
+                            "Failed to resolve model for summary: {model_id}"
+                        ))
+                    })?;
 
-                let context = Context {
-                    system_prompt: Some(branch_summary::SUMMARIZATION_SYSTEM_PROMPT.to_string()),
-                    messages: vec![Message::User(UserMessage {
-                        content: UserContent::Text(summary_prompt),
-                        timestamp: chrono::Utc::now().timestamp_millis(),
-                    })],
-                    tools: None,
-                };
+                    let context = Context {
+                        system_prompt: Some(
+                            branch_summary::SUMMARIZATION_SYSTEM_PROMPT.to_string(),
+                        ),
+                        messages: vec![Message::User(UserMessage {
+                            content: UserContent::Text(summary_prompt),
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                        })],
+                        tools: None,
+                    };
 
-                let options = SimpleStreamOptions::default();
-                let cancel = CancellationToken::new();
-                let stream = stream_simple(&model, &context, &options, &registry, cancel)
-                    .map_err(|e| CodingAgentError::Agent(format!("Summary stream error: {e}")))?;
+                    let options = SimpleStreamOptions::default();
+                    let cancel = CancellationToken::new();
+                    let stream = stream_simple(&model, &context, &options, &registry, cancel)
+                        .map_err(|e| {
+                            CodingAgentError::Agent(format!("Summary stream error: {e}"))
+                        })?;
 
-                // Collect the full response text
-                let mut text = String::new();
-                let mut pinned = Box::pin(futures::stream::unfold(stream.clone(), |mut s| async move {
-                    let event = s.next().await;
-                    event.map(|e| (e, s))
-                }));
-                use futures::StreamExt;
-                while let Some(event) = pinned.next().await {
-                    if let AssistantMessageEvent::TextDelta { delta, .. } = event {
-                        text.push_str(&delta);
+                    // Collect the full response text
+                    let mut text = String::new();
+                    let mut pinned = Box::pin(futures::stream::unfold(
+                        stream.clone(),
+                        |mut s| async move {
+                            let event = s.next().await;
+                            event.map(|e| (e, s))
+                        },
+                    ));
+                    use futures::StreamExt;
+                    while let Some(event) = pinned.next().await {
+                        if let AssistantMessageEvent::TextDelta { delta, .. } = event {
+                            text.push_str(&delta);
+                        }
                     }
-                }
 
-                if text.is_empty() {
-                    // Fallback to basic summary
-                    let max_len = 500;
-                    let end = summary_context
-                        .char_indices()
-                        .take_while(|&(i, _)| i <= max_len)
-                        .last()
-                        .map(|(i, c)| i + c.len_utf8())
-                        .unwrap_or(0);
-                    Ok(format!("Conversation summary: {}", &summary_context[..end]))
-                } else {
-                    Ok(text)
-                }
-            }) as Pin<Box<dyn Future<Output = Result<String, CodingAgentError>> + Send>>
-        });
+                    if text.is_empty() {
+                        // Fallback to basic summary
+                        let max_len = 500;
+                        let end = summary_context
+                            .char_indices()
+                            .take_while(|&(i, _)| i <= max_len)
+                            .last()
+                            .map(|(i, c)| i + c.len_utf8())
+                            .unwrap_or(0);
+                        Ok(format!("Conversation summary: {}", &summary_context[..end]))
+                    } else {
+                        Ok(text)
+                    }
+                })
+                    as Pin<Box<dyn Future<Output = Result<String, CodingAgentError>> + Send>>
+            },
+        );
         session.set_summary_fn(summary_fn);
 
         // Set up retry configuration from aobot config
@@ -392,10 +464,8 @@ impl GatewaySessionManager {
                         ));
                     } else {
                         // Non-image documents: describe as text
-                        let desc = format!(
-                            "[Document: {}]",
-                            file_name.as_deref().unwrap_or("unknown")
-                        );
+                        let desc =
+                            format!("[Document: {}]", file_name.as_deref().unwrap_or("unknown"));
                         blocks.push(pi_agent_core::types::ContentBlock::Text(
                             pi_agent_core::types::TextContent {
                                 text: desc,
@@ -474,7 +544,10 @@ impl GatewaySessionManager {
                 || err_str.contains("context")
                 || err_str.contains("token")
             {
-                tracing::warn!(session_key, "Context overflow detected, attempting emergency compaction");
+                tracing::warn!(
+                    session_key,
+                    "Context overflow detected, attempting emergency compaction"
+                );
                 if managed.session.compact(None).await.is_ok() {
                     managed
                         .session
@@ -572,9 +645,7 @@ impl GatewaySessionManager {
                         delta: delta.clone(),
                     });
                 }
-                AgentSessionEvent::Agent(AgentEvent::ToolExecutionStart {
-                    tool_name, ..
-                }) => {
+                AgentSessionEvent::Agent(AgentEvent::ToolExecutionStart { tool_name, .. }) => {
                     let _ = event_tx.send(StreamEvent::ToolStart {
                         tool_name: tool_name.clone(),
                     });
@@ -614,7 +685,10 @@ impl GatewaySessionManager {
                 || err_str.contains("context")
                 || err_str.contains("token")
             {
-                tracing::warn!(session_key, "Context overflow detected, attempting emergency compaction");
+                tracing::warn!(
+                    session_key,
+                    "Context overflow detected, attempting emergency compaction"
+                );
                 if managed.session.compact(None).await.is_ok() {
                     managed
                         .session
@@ -664,14 +738,9 @@ impl GatewaySessionManager {
     }
 
     /// Get chat history for a session.
-    pub async fn get_history(
-        &self,
-        session_key: &str,
-    ) -> Result<Vec<serde_json::Value>, String> {
+    pub async fn get_history(&self, session_key: &str) -> Result<Vec<serde_json::Value>, String> {
         let sessions = self.sessions.read().await;
-        let session_arc = sessions
-            .get(session_key)
-            .ok_or("Session not found")?;
+        let session_arc = sessions.get(session_key).ok_or("Session not found")?;
         let managed = session_arc.lock().await;
 
         let messages: Vec<serde_json::Value> = managed
@@ -679,9 +748,8 @@ impl GatewaySessionManager {
             .messages()
             .iter()
             .filter_map(|msg| {
-                msg.as_message().map(|m| {
-                    serde_json::to_value(m).unwrap_or(serde_json::Value::Null)
-                })
+                msg.as_message()
+                    .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
             })
             .collect();
 
@@ -730,7 +798,10 @@ impl GatewaySessionManager {
 
     /// Apply config update (from hot-reload). Updates config and logs change.
     pub async fn apply_config(&self, config: AoBotConfig) {
-        tracing::info!("Applying config update: {} agents configured", config.agents.len());
+        tracing::info!(
+            "Applying config update: {} agents configured",
+            config.agents.len()
+        );
         self.set_config(config).await;
     }
 
@@ -761,11 +832,7 @@ impl GatewaySessionManager {
     }
 
     /// Check if auto-compaction should run and execute it if needed.
-    async fn maybe_compact(
-        &self,
-        session_key: &str,
-        managed: &mut ManagedSession,
-    ) {
+    async fn maybe_compact(&self, session_key: &str, managed: &mut ManagedSession) {
         let config = self.config.read().await;
         let settings = Self::build_compaction_settings(&config.compaction);
         drop(config); // release read lock before await
@@ -829,7 +896,10 @@ impl GatewaySessionManager {
         tracing::info!("Restoring {count} sessions from storage");
 
         for meta in saved {
-            if let Err(e) = self.create_session(&meta.session_key, Some(&meta.agent_name)).await {
+            if let Err(e) = self
+                .create_session(&meta.session_key, Some(&meta.agent_name))
+                .await
+            {
                 tracing::warn!(
                     session_key = %meta.session_key,
                     "Failed to restore session: {e}"
@@ -870,30 +940,72 @@ impl GatewaySessionManager {
     }
 }
 
-/// Build a tool set for an agent based on its configured tool names.
+/// Build a tool set for an agent based on its tool configuration.
 ///
-/// If `tool_names` is empty, falls back to the default coding tools (bash, read, write, edit).
-/// Otherwise, selects only the named tools from the full built-in tool registry.
+/// Uses the tool policy system to resolve the effective tool set:
+/// 1. If legacy config (just tool names), use them directly
+/// 2. Otherwise, resolve profile + allow/also_allow/deny
+/// 3. Apply global deny list
 fn build_tools_for_agent(
     working_dir: &std::path::Path,
-    tool_names: &[String],
+    tools_config: &AgentToolsConfig,
+    global_tools: &aobot_config::GlobalToolsConfig,
 ) -> Vec<Arc<dyn pi_agent_core::agent_types::AgentTool>> {
-    if tool_names.is_empty() {
+    let all = create_all_tools(working_dir);
+    let all_names: Vec<String> = all.keys().cloned().collect();
+
+    // Resolve effective tool names using policy
+    let policy = aobot_tools::policy::ToolPolicy {
+        profile: match &tools_config.profile {
+            aobot_types::ToolProfile::Minimal => aobot_tools::policy::ToolProfile::Minimal,
+            aobot_types::ToolProfile::Coding => aobot_tools::policy::ToolProfile::Coding,
+            aobot_types::ToolProfile::Messaging => aobot_tools::policy::ToolProfile::Messaging,
+            aobot_types::ToolProfile::Full => aobot_tools::policy::ToolProfile::Full,
+        },
+        allow: tools_config.allow.clone(),
+        also_allow: tools_config.also_allow.clone(),
+        deny: {
+            let mut deny = tools_config.deny.clone();
+            deny.extend(global_tools.global_deny.clone());
+            deny
+        },
+        by_provider: tools_config
+            .by_provider
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    aobot_tools::policy::ToolPolicyOverride {
+                        allow: v.allow.clone(),
+                        deny: v.deny.clone(),
+                    },
+                )
+            })
+            .collect(),
+    };
+
+    let effective_names = aobot_tools::policy::resolve_effective_tools(&policy, &all_names);
+
+    if effective_names.is_empty() {
+        // Fallback: if policy resolves to nothing, use legacy behavior
+        if tools_config.allow.is_empty() {
+            return create_coding_tools(working_dir);
+        }
+        tracing::warn!("Tool policy resolved to empty set, using default coding tools");
         return create_coding_tools(working_dir);
     }
 
-    let all = create_all_tools(working_dir);
     let mut tools: Vec<Arc<dyn pi_agent_core::agent_types::AgentTool>> = Vec::new();
-    for name in tool_names {
+    for name in &effective_names {
         if let Some(tool) = all.get(name.as_str()) {
             tools.push(tool.clone());
-        } else {
-            tracing::warn!(tool = %name, "Unknown tool name in agent config, skipping");
         }
+        // Gateway tools (sessions_list, message, etc.) are not in the base tool registry
+        // They will be added separately when gateway tool context is available
     }
 
     if tools.is_empty() {
-        tracing::warn!("No valid tools found in agent config, using default coding tools");
+        tracing::warn!("No valid tools found after policy resolution, using default coding tools");
         return create_coding_tools(working_dir);
     }
 

@@ -1,0 +1,13 @@
+[package]
+name = "aobot-hooks"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aobot-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }

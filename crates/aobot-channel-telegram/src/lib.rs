@@ -20,8 +20,8 @@ pub mod types;
 
 use std::sync::Arc;
 
-use anyhow::{bail, Context};
-use tokio::sync::{mpsc, Mutex};
+use anyhow::{Context, bail};
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -635,10 +635,7 @@ mod tests {
 
     #[test]
     fn test_split_message_code_block_awareness() {
-        let text = format!(
-            "Before\n```rust\n{}\n```\nAfter",
-            "x".repeat(100)
-        );
+        let text = format!("Before\n```rust\n{}\n```\nAfter", "x".repeat(100));
         // With a small limit, the code block should be closed/reopened across chunks
         let chunks = split_message(&text, 60);
         assert!(chunks.len() >= 2);

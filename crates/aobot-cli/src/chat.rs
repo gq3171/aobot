@@ -10,7 +10,7 @@ use pi_agent_core::agent_types::{AgentEvent, StreamFnBox};
 use pi_agent_core::event_stream::create_assistant_message_event_stream;
 use pi_agent_core::types::*;
 use pi_coding_agent::agent_session::events::AgentSessionEvent;
-use pi_coding_agent::agent_session::sdk::{create_agent_session, CreateSessionOptions};
+use pi_coding_agent::agent_session::sdk::{CreateSessionOptions, create_agent_session};
 use pi_coding_agent::agent_session::session::PromptOptions;
 use pi_coding_agent::tools::create_coding_tools;
 
@@ -85,34 +85,30 @@ pub async fn run_chat(
     session.set_system_prompt(prompt);
 
     // Subscribe to events for streaming output
-    session.subscribe(Box::new(|event| {
-        match &event {
-            AgentSessionEvent::Agent(AgentEvent::MessageUpdate {
-                assistant_message_event: AssistantMessageEvent::TextDelta { delta, .. },
-                ..
-            }) => {
-                print!("{delta}");
-                let _ = io::stdout().flush();
-            }
-            AgentSessionEvent::Agent(AgentEvent::ToolExecutionStart {
-                tool_name, ..
-            }) => {
-                eprintln!("\n[tool: {tool_name}]");
-            }
-            AgentSessionEvent::Agent(AgentEvent::ToolExecutionEnd {
-                tool_name,
-                is_error,
-                ..
-            }) => {
-                if *is_error {
-                    eprintln!("[tool: {tool_name} - error]");
-                }
-            }
-            AgentSessionEvent::Error { message } => {
-                eprintln!("\n[error: {message}]");
-            }
-            _ => {}
+    session.subscribe(Box::new(|event| match &event {
+        AgentSessionEvent::Agent(AgentEvent::MessageUpdate {
+            assistant_message_event: AssistantMessageEvent::TextDelta { delta, .. },
+            ..
+        }) => {
+            print!("{delta}");
+            let _ = io::stdout().flush();
         }
+        AgentSessionEvent::Agent(AgentEvent::ToolExecutionStart { tool_name, .. }) => {
+            eprintln!("\n[tool: {tool_name}]");
+        }
+        AgentSessionEvent::Agent(AgentEvent::ToolExecutionEnd {
+            tool_name,
+            is_error,
+            ..
+        }) => {
+            if *is_error {
+                eprintln!("[tool: {tool_name} - error]");
+            }
+        }
+        AgentSessionEvent::Error { message } => {
+            eprintln!("\n[error: {message}]");
+        }
+        _ => {}
     }));
 
     // Print welcome message

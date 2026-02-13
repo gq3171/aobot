@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use aobot_types::{AgentConfig, ChannelConfig};
+use aobot_types::{AgentConfig, AgentToolsConfig, ChannelConfig, ToolProfile};
 
 /// MCP server transport configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +155,134 @@ impl Default for RetryConfig {
     }
 }
 
+// ──────────────────── Global Tools Config ────────────────────
+
+/// Global tool configuration (applies to all agents unless overridden).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GlobalToolsConfig {
+    /// Default tool profile for agents that don't specify one.
+    #[serde(default)]
+    pub default_profile: ToolProfile,
+    /// Global deny list — these tools are denied regardless of agent config.
+    #[serde(default)]
+    pub global_deny: Vec<String>,
+}
+
+// ──────────────────── Memory Config ────────────────────
+
+/// Global memory/RAG configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalMemoryConfig {
+    /// Whether the memory system is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Embedding provider: "auto", "openai", "gemini", "voyage".
+    #[serde(default = "default_memory_provider")]
+    pub provider: String,
+    /// Directories to index for memory.
+    #[serde(default)]
+    pub dirs: Vec<String>,
+    /// Maximum tokens per chunk.
+    #[serde(default = "default_chunk_size")]
+    pub chunk_size: usize,
+    /// Overlap lines between chunks.
+    #[serde(default = "default_chunk_overlap")]
+    pub chunk_overlap: usize,
+    /// Whether to sync on startup.
+    #[serde(default)]
+    pub sync_on_start: bool,
+    /// OpenAI embedding config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai: Option<EmbeddingProviderConfig>,
+}
+
+fn default_memory_provider() -> String {
+    "auto".to_string()
+}
+
+fn default_chunk_size() -> usize {
+    500
+}
+
+fn default_chunk_overlap() -> usize {
+    50
+}
+
+/// Configuration for a specific embedding provider.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EmbeddingProviderConfig {
+    /// Environment variable name for API key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+    /// Model identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+// ──────────────────── Media Config ────────────────────
+
+/// Media understanding configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaConfig {
+    /// Whether media understanding is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Audio transcription providers.
+    #[serde(default)]
+    pub audio: Vec<MediaProviderConfig>,
+    /// Image description providers.
+    #[serde(default)]
+    pub image: Vec<MediaProviderConfig>,
+}
+
+/// Configuration for a media processing provider.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MediaProviderConfig {
+    /// Provider name: "openai", "deepgram", etc.
+    pub provider: String,
+    /// Model identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+// ──────────────────── Hooks Config ────────────────────
+
+/// Global hooks configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HooksConfig {
+    /// Whether hooks are enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Additional hook directories.
+    #[serde(default)]
+    pub dirs: Vec<String>,
+}
+
+// ──────────────────── Skills Config ────────────────────
+
+/// Global skills configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SkillsConfig {
+    /// Whether skills are enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Additional skill directories.
+    #[serde(default)]
+    pub dirs: Vec<String>,
+}
+
+// ──────────────────── Cron Config ────────────────────
+
+/// Global cron/scheduler configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CronConfig {
+    /// Whether cron is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+// ──────────────────── Top-level Config ────────────────────
+
 /// Top-level aobot configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AoBotConfig {
@@ -179,6 +307,24 @@ pub struct AoBotConfig {
     /// MCP server configurations.
     #[serde(default)]
     pub mcp: HashMap<String, McpServerConfig>,
+    /// Global tool configuration.
+    #[serde(default)]
+    pub tools: GlobalToolsConfig,
+    /// Memory/RAG system configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<GlobalMemoryConfig>,
+    /// Media understanding configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<MediaConfig>,
+    /// Hooks configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<HooksConfig>,
+    /// Skills configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<SkillsConfig>,
+    /// Cron/scheduler configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cron: Option<CronConfig>,
 }
 
 fn default_agent_name() -> String {
@@ -194,12 +340,18 @@ impl Default for AoBotConfig {
                 name: "default".to_string(),
                 model: "anthropic/claude-sonnet-4".to_string(),
                 system_prompt: Some("You are a helpful assistant.".to_string()),
-                tools: vec![
-                    "bash".to_string(),
-                    "read".to_string(),
-                    "write".to_string(),
-                    "edit".to_string(),
-                ],
+                tools: AgentToolsConfig {
+                    profile: ToolProfile::Full,
+                    allow: vec![
+                        "bash".to_string(),
+                        "read".to_string(),
+                        "write".to_string(),
+                        "edit".to_string(),
+                    ],
+                    ..Default::default()
+                },
+                subagents: None,
+                sandbox: None,
             },
         );
 
@@ -211,6 +363,12 @@ impl Default for AoBotConfig {
             compaction: CompactionConfig::default(),
             retry: RetryConfig::default(),
             mcp: HashMap::new(),
+            tools: GlobalToolsConfig::default(),
+            memory: None,
+            media: None,
+            hooks: None,
+            skills: None,
+            cron: None,
         }
     }
 }
@@ -239,7 +397,10 @@ pub fn load_config() -> Result<AoBotConfig, ConfigError> {
 /// Load configuration from a specific path, falling back to defaults if not found.
 pub fn load_config_from(path: &Path) -> Result<AoBotConfig, ConfigError> {
     if !path.exists() {
-        tracing::debug!("Config file not found at {}, using defaults", path.display());
+        tracing::debug!(
+            "Config file not found at {}, using defaults",
+            path.display()
+        );
         return Ok(AoBotConfig::default());
     }
 
@@ -295,6 +456,10 @@ tools = ["bash", "read"]
         assert_eq!(config.gateway.port, 8080);
         assert!(config.agents.contains_key("coder"));
         assert!(config.channels.is_empty());
+        // Verify legacy tools format
+        let coder = &config.agents["coder"];
+        assert_eq!(coder.tools.allow, vec!["bash", "read"]);
+        assert!(coder.tools.is_legacy());
     }
 
     #[test]
@@ -314,6 +479,42 @@ bot_token = "123:ABC"
         assert_eq!(ch.channel_type, "telegram");
         assert!(ch.enabled);
         assert_eq!(ch.agent, Some("coder".into()));
+    }
+
+    #[test]
+    fn test_toml_parse_new_tools_config() {
+        let toml_str = r#"
+[agents.assistant]
+name = "assistant"
+model = "anthropic/claude-sonnet-4"
+
+[agents.assistant.tools]
+profile = "coding"
+also_allow = ["web_search"]
+deny = ["bash"]
+"#;
+        let config: AoBotConfig = toml::from_str(toml_str).unwrap();
+        let agent = &config.agents["assistant"];
+        assert_eq!(agent.tools.profile, ToolProfile::Coding);
+        assert_eq!(agent.tools.also_allow, vec!["web_search"]);
+        assert_eq!(agent.tools.deny, vec!["bash"]);
+    }
+
+    #[test]
+    fn test_toml_parse_with_memory_config() {
+        let toml_str = r#"
+[memory]
+enabled = true
+provider = "openai"
+dirs = ["~/.aobot/MEMORY.md"]
+chunk_size = 300
+"#;
+        let config: AoBotConfig = toml::from_str(toml_str).unwrap();
+        let mem = config.memory.unwrap();
+        assert!(mem.enabled);
+        assert_eq!(mem.provider, "openai");
+        assert_eq!(mem.dirs, vec!["~/.aobot/MEMORY.md"]);
+        assert_eq!(mem.chunk_size, 300);
     }
 
     #[test]

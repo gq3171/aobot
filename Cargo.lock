@@ -168,13 +168,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "aobot-cron"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "aobot-gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "aobot-config",
+ "aobot-cron",
+ "aobot-hooks",
  "aobot-mcp",
+ "aobot-skills",
  "aobot-storage",
+ "aobot-tools",
  "aobot-types",
  "async-trait",
  "axum",
@@ -196,6 +214,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aobot-hooks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aobot-types",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "aobot-mcp"
 version = "0.1.0"
 dependencies = [
@@ -214,6 +245,65 @@ dependencies = [
 ]
 
 [[package]]
+name = "aobot-media"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "aobot-memory"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aobot-config",
+ "async-trait",
+ "chrono",
+ "hex",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "aobot-plugin-sdk"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aobot-types",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "aobot-skills"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "aobot-storage"
 version = "0.1.0"
 dependencies = [
@@ -227,11 +317,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "aobot-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aobot-config",
+ "aobot-types",
+ "async-trait",
+ "base64",
+ "chrono",
+ "once_cell",
+ "pi-agent-core",
+ "pi-coding-agent",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "aobot-types"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

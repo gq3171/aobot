@@ -69,10 +69,7 @@ impl EventHandler for DiscordHandler {
         // Detect bot commands (messages starting with !)
         let (command, clean_text) = parse_command(&text);
         if let Some(cmd) = command {
-            metadata.insert(
-                "command".into(),
-                serde_json::Value::String(cmd),
-            );
+            metadata.insert("command".into(), serde_json::Value::String(cmd));
         }
 
         let inbound = InboundMessage {
@@ -141,12 +138,7 @@ async fn download_discord_attachment(
     http_client: &reqwest::Client,
     att: &serenity::model::channel::Attachment,
 ) -> anyhow::Result<Attachment> {
-    let bytes = http_client
-        .get(&att.url)
-        .send()
-        .await?
-        .bytes()
-        .await?;
+    let bytes = http_client.get(&att.url).send().await?.bytes().await?;
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let content_type = att

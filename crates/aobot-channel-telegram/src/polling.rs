@@ -66,7 +66,8 @@ pub async fn run_polling_loop(
                     // Handle photo messages (pick largest resolution)
                     if let Some(ref photos) = msg.photo {
                         if let Some(largest) = photos.iter().max_by_key(|p| p.width * p.height) {
-                            match download_as_attachment(api, &largest.file_id, "image/jpeg").await {
+                            match download_as_attachment(api, &largest.file_id, "image/jpeg").await
+                            {
                                 Ok(att) => attachments.push(att),
                                 Err(e) => warn!(channel_id, "Failed to download photo: {e}"),
                             }
@@ -75,7 +76,10 @@ pub async fn run_polling_loop(
 
                     // Handle document messages
                     if let Some(ref doc) = msg.document {
-                        let mime = doc.mime_type.as_deref().unwrap_or("application/octet-stream");
+                        let mime = doc
+                            .mime_type
+                            .as_deref()
+                            .unwrap_or("application/octet-stream");
                         match download_as_attachment(api, &doc.file_id, mime).await {
                             Ok(att) => {
                                 // Convert to Document variant with file_name
@@ -130,9 +134,10 @@ pub async fn run_polling_loop(
                     );
 
                     // Detect bot commands (entity type "bot_command" at offset 0)
-                    let is_command = msg.entities.iter().any(|e| {
-                        e.entity_type == "bot_command" && e.offset == 0
-                    });
+                    let is_command = msg
+                        .entities
+                        .iter()
+                        .any(|e| e.entity_type == "bot_command" && e.offset == 0);
                     if is_command {
                         // Extract command name (e.g. "/new" → "new", "/help@botname" → "help")
                         let cmd = text
@@ -143,10 +148,8 @@ pub async fn run_polling_loop(
                             .split('@')
                             .next()
                             .unwrap_or("");
-                        metadata.insert(
-                            "command".into(),
-                            serde_json::Value::String(cmd.to_string()),
-                        );
+                        metadata
+                            .insert("command".into(), serde_json::Value::String(cmd.to_string()));
                     }
 
                     let inbound = InboundMessage {

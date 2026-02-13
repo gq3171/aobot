@@ -8,7 +8,9 @@ use tracing::{info, warn};
 
 use crate::channel::ChannelManager;
 use crate::handlers::handle_rpc;
-use crate::jsonrpc::{JsonRpcRequest, JsonRpcResponse, INTERNAL_ERROR, INVALID_PARAMS, PARSE_ERROR};
+use crate::jsonrpc::{
+    INTERNAL_ERROR, INVALID_PARAMS, JsonRpcRequest, JsonRpcResponse, PARSE_ERROR,
+};
 use crate::session_manager::{GatewaySessionManager, StreamEvent};
 
 /// Handle a WebSocket connection.
@@ -43,7 +45,11 @@ pub async fn handle_ws_connection(
                         }
                     };
 
-                    if socket.send(Message::Text(response_json.into())).await.is_err() {
+                    if socket
+                        .send(Message::Text(response_json.into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -111,12 +117,7 @@ async fn handle_stream_request(
 
     let agent_ref = agent.as_deref();
 
-    let prompt_fut = manager.send_message_streaming(
-        &session_key,
-        &message,
-        agent_ref,
-        event_tx,
-    );
+    let prompt_fut = manager.send_message_streaming(&session_key, &message, agent_ref, event_tx);
 
     tokio::pin!(prompt_fut);
 
@@ -231,7 +232,14 @@ async fn process_rpc_message(
         );
     }
 
-    handle_rpc(&request.method, &request.params, request.id, manager, channel_mgr).await
+    handle_rpc(
+        &request.method,
+        &request.params,
+        request.id,
+        manager,
+        channel_mgr,
+    )
+    .await
 }
 
 #[cfg(test)]

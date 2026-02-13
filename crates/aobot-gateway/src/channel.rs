@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -236,7 +236,12 @@ impl ChannelManager {
     /// the session manager. Responses are sent back through the originating channel.
     ///
     /// Should be spawned as a background task.
-    pub async fn run_message_loop(self: &Arc<Self>, manager: Arc<GatewaySessionManager>) {
+    pub async fn run_message_loop(
+        self: &Arc<Self>,
+        manager: Arc<GatewaySessionManager>,
+        hooks: Arc<aobot_hooks::registry::HookRegistry>,
+        skills: Arc<Vec<aobot_skills::loader::SkillEntry>>,
+    ) {
         let mut rx = self.inbound_rx.lock().await;
 
         info!("Channel message loop started");
@@ -244,15 +249,24 @@ impl ChannelManager {
         while let Some(inbound) = rx.recv().await {
             let manager = manager.clone();
             let channel_mgr = self.clone();
+            let hooks = hooks.clone();
+            let skills = skills.clone();
 
             tokio::spawn(async move {
+                // Emit MessageReceived hook
+                hooks
+                    .emit(aobot_hooks::events::HookEvent::MessageReceived {
+                        inbound: inbound.clone(),
+                    })
+                    .await;
+
                 // Derive session key from channel + sender if not provided
-                let session_key = inbound
-                    .session_key
-                    .clone()
-                    .unwrap_or_else(|| {
-                        format!("{}:{}:{}", inbound.channel_type, inbound.channel_id, inbound.sender_id)
-                    });
+                let session_key = inbound.session_key.clone().unwrap_or_else(|| {
+                    format!(
+                        "{}:{}:{}",
+                        inbound.channel_type, inbound.channel_id, inbound.sender_id
+                    )
+                });
 
                 let agent = inbound.agent.as_deref();
 
@@ -265,13 +279,30 @@ impl ChannelManager {
                 );
 
                 // Check for bot commands in metadata
-                if let Some(cmd) = inbound.metadata.get("command").and_then(|v| v.as_str()).map(String::from) {
+                if let Some(cmd) = inbound
+                    .metadata
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                {
                     let reply_text = match cmd.as_str() {
                         "new" => {
+                            // Emit CommandNew hook
+                            hooks
+                                .emit(aobot_hooks::events::HookEvent::CommandNew {
+                                    session_key: session_key.clone(),
+                                })
+                                .await;
                             manager.delete_session(&session_key).await;
                             "🔄 New conversation started. How can I help you?".to_string()
                         }
                         "help" | "start" => {
+                            // Emit CommandHelp hook
+                            hooks
+                                .emit(aobot_hooks::events::HookEvent::CommandHelp {
+                                    session_key: session_key.clone(),
+                                })
+                                .await;
                             "🤖 *aobot* — AI Assistant\n\n\
                              Commands:\n\
                              /new — Start a new conversation\n\
@@ -295,6 +326,12 @@ impl ChannelManager {
                             attachments: vec![],
                             metadata: inbound.metadata,
                         };
+                        // Emit MessageSending hook
+                        hooks
+                            .emit(aobot_hooks::events::HookEvent::MessageSending {
+                                outbound: outbound.clone(),
+                            })
+                            .await;
                         if let Err(e) = channel_mgr.send_message(outbound).await {
                             warn!("Failed to send command response: {e}");
                         }
@@ -302,12 +339,41 @@ impl ChannelManager {
                     }
                 }
 
-                // Check if channel supports streaming
-                let use_streaming = if let Some(ch) = channel_mgr.get_channel(&inbound.channel_id).await {
-                    ch.supports_streaming()
+                // Check for skill slash commands (e.g. /review-pr <args>)
+                let (effective_text, skill_prompt) = if inbound.text.starts_with('/') {
+                    let parts: Vec<&str> = inbound.text.splitn(2, ' ').collect();
+                    let cmd_name = &parts[0][1..]; // strip leading /
+                    let args = parts.get(1).unwrap_or(&"").to_string();
+                    if let Some(skill) = skills
+                        .iter()
+                        .find(|s| s.user_invocable && s.name == cmd_name)
+                    {
+                        info!(skill = %skill.name, "Invoking skill slash command");
+                        let prompt = format!(
+                            "{}\n\n---\n\nUser request: {}",
+                            skill.content,
+                            if args.is_empty() {
+                                inbound.text.clone()
+                            } else {
+                                args
+                            }
+                        );
+                        (prompt, Some(skill.name.clone()))
+                    } else {
+                        (inbound.text.clone(), None)
+                    }
                 } else {
-                    false
+                    (inbound.text.clone(), None)
                 };
+                let _ = skill_prompt; // skill_prompt available for future use (e.g. logging)
+
+                // Check if channel supports streaming
+                let use_streaming =
+                    if let Some(ch) = channel_mgr.get_channel(&inbound.channel_id).await {
+                        ch.supports_streaming()
+                    } else {
+                        false
+                    };
 
                 if use_streaming {
                     // Streaming path: send events to channel's send_streaming()
@@ -318,14 +384,18 @@ impl ChannelManager {
                     let session_key_clone = session_key.clone();
 
                     // Spawn the streaming display task
-                    let stream_handle = channel.map(|ch| tokio::spawn(async move {
-                        ch.send_streaming(&metadata, event_rx).await
-                    }));
+                    let stream_handle = channel.map(|ch| {
+                        tokio::spawn(async move { ch.send_streaming(&metadata, event_rx).await })
+                    });
 
                     // Run the AI prompt with streaming events
                     match manager
                         .send_message_streaming_with_attachments(
-                            &session_key, &inbound.text, agent, &inbound.attachments, event_tx,
+                            &session_key,
+                            &effective_text,
+                            agent,
+                            &inbound.attachments,
+                            event_tx,
                         )
                         .await
                     {
@@ -361,7 +431,10 @@ impl ChannelManager {
 
                     match manager
                         .send_message_with_attachments(
-                            &session_key, &inbound.text, agent, &inbound.attachments,
+                            &session_key,
+                            &effective_text,
+                            agent,
+                            &inbound.attachments,
                         )
                         .await
                     {
@@ -376,6 +449,13 @@ impl ChannelManager {
                                 attachments: vec![],
                                 metadata: inbound.metadata,
                             };
+
+                            // Emit MessageSending hook
+                            hooks
+                                .emit(aobot_hooks::events::HookEvent::MessageSending {
+                                    outbound: outbound.clone(),
+                                })
+                                .await;
 
                             if let Err(e) = channel_mgr.send_message(outbound).await {
                                 warn!("Failed to send response to channel: {e}");

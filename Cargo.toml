@@ -7,8 +7,15 @@ members = [
     "crates/aobot-storage",
     "crates/aobot-gateway",
     "crates/aobot-mcp",
+    "crates/aobot-tools",
+    "crates/aobot-memory",
+    "crates/aobot-skills",
+    "crates/aobot-hooks",
+    "crates/aobot-media",
+    "crates/aobot-cron",
     "crates/aobot-channel-telegram",
     "crates/aobot-channel-discord",
+    "crates/aobot-plugin-sdk",
     "crates/aobot-cli",
     "pi-agent-rs/crates/pi-agent-core",
     "pi-agent-rs/crates/pi-agent-ai",
@@ -65,3 +72,10 @@ aobot-gateway = { path = "crates/aobot-gateway" }
 aobot-mcp = { path = "crates/aobot-mcp" }
 aobot-channel-telegram = { path = "crates/aobot-channel-telegram" }
 aobot-channel-discord = { path = "crates/aobot-channel-discord" }
+aobot-plugin-sdk = { path = "crates/aobot-plugin-sdk" }
+aobot-tools = { path = "crates/aobot-tools" }
+aobot-memory = { path = "crates/aobot-memory" }
+aobot-skills = { path = "crates/aobot-skills" }
+aobot-hooks = { path = "crates/aobot-hooks" }
+aobot-media = { path = "crates/aobot-media" }
+aobot-cron = { path = "crates/aobot-cron" }

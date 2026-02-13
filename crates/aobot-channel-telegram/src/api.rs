@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use reqwest::Client;
 
 use crate::types::{
@@ -192,9 +192,7 @@ impl TelegramApi {
     pub async fn download_file(&self, file_path: &str) -> anyhow::Result<Vec<u8>> {
         // Telegram file download URL format:
         // https://api.telegram.org/file/bot<token>/<file_path>
-        let url = self
-            .base_url
-            .replace("/bot", "/file/bot");
+        let url = self.base_url.replace("/bot", "/file/bot");
         let download_url = format!("{url}/{file_path}");
 
         let bytes = self

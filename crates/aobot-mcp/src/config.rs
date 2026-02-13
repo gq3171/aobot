@@ -13,9 +13,7 @@ pub enum McpTransport {
         env: std::collections::HashMap<String, String>,
     },
     /// SSE transport: connect to an HTTP SSE endpoint.
-    Sse {
-        url: String,
-    },
+    Sse { url: String },
 }
 
 /// Configuration for a single MCP server.

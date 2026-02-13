@@ -69,9 +69,7 @@ impl AoBotStorage {
         )?;
 
         // Migration: add pi_session_id column (ignore error if already exists)
-        let _ = conn.execute_batch(
-            "ALTER TABLE gateway_sessions ADD COLUMN pi_session_id TEXT;",
-        );
+        let _ = conn.execute_batch("ALTER TABLE gateway_sessions ADD COLUMN pi_session_id TEXT;");
 
         tracing::info!("Storage opened: {}", path.display());
 
@@ -422,7 +420,10 @@ mod tests {
         storage.save_session(&meta).await.unwrap();
 
         // Bind channel
-        storage.bind_channel("tg:bot1:user1", "sess-1").await.unwrap();
+        storage
+            .bind_channel("tg:bot1:user1", "sess-1")
+            .await
+            .unwrap();
         let session = storage.get_channel_session("tg:bot1:user1").await.unwrap();
         assert_eq!(session, Some("sess-1".into()));
 

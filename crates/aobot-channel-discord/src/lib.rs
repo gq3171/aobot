@@ -19,11 +19,11 @@ pub mod handler;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
+use serenity::Client;
 use serenity::all::{CreateAttachment, CreateMessage, GatewayIntents, Http};
 use serenity::model::id::ChannelId;
-use serenity::Client;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::info;
 
@@ -212,10 +212,7 @@ impl aobot_gateway::channel::ChannelPlugin for DiscordChannel {
         let channel_id = self.id.clone();
         let handle = tokio::spawn(async move {
             if let Err(e) = client.start().await {
-                tracing::error!(
-                    channel_id,
-                    "Discord client error: {e}"
-                );
+                tracing::error!(channel_id, "Discord client error: {e}");
             }
         });
 
@@ -263,7 +260,9 @@ impl aobot_gateway::channel::ChannelPlugin for DiscordChannel {
             .and_then(|v| v.as_str())
             .or(Some(message.recipient_id.as_str()))
             .and_then(|s| s.parse::<u64>().ok())
-            .context("missing discord_channel_id in metadata and recipient_id is not a valid u64")?;
+            .context(
+                "missing discord_channel_id in metadata and recipient_id is not a valid u64",
+            )?;
 
         let channel = ChannelId::new(discord_channel_id);
 
